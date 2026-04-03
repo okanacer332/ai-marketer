@@ -1,0 +1,16 @@
+-e ../Scrapling-main
+click>=8.3.0
+curl_cffi>=0.14.0
+playwright==1.58.0
+patchright==1.58.2
+browserforge>=1.2.4
+apify-fingerprint-datapoints>=0.11.0
+msgspec>=0.20.0
+anyio>=4.12.1
+fastapi==0.135.3
+uvicorn==0.42.0
+httpx==0.28.1
+pymongo==4.15.3
+python-dotenv==1.2.2
+google-auth==2.41.1
+requests==2.32.5

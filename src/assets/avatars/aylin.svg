@@ -1,0 +1,18 @@
+<svg width="320" height="320" viewBox="0 0 320 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="320" height="320" rx="44" fill="#FFF6EE"/>
+  <circle cx="160" cy="160" r="120" fill="#E7F4F1"/>
+  <path d="M100 272C108 222.5 129.333 197.667 164 197.5C198.667 197.333 220 222.167 228 272H100Z" fill="#204852"/>
+  <ellipse cx="160" cy="138" rx="58" ry="67" fill="#F6C2A0"/>
+  <path d="M101 132C105 88 129.333 57.3333 174 58C213 58.6667 227.5 93 225 136C211.5 127.5 199.833 120.833 190 116C171.6 106.8 145.333 111.167 111 129L101 132Z" fill="#183640"/>
+  <path d="M118 113C128 96.3333 143.333 88 164 88C184.667 88 199.667 96.3333 209 113" stroke="#183640" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="138" cy="142" r="6" fill="#183640"/>
+  <circle cx="184" cy="142" r="6" fill="#183640"/>
+  <path d="M148 173C156.5 179 166.5 179 178 173" stroke="#D46F5C" stroke-width="6" stroke-linecap="round"/>
+  <path d="M129 122C134.167 117.5 140.167 115.167 147 115" stroke="#183640" stroke-width="5" stroke-linecap="round"/>
+  <path d="M175 115C181.833 115.167 187.833 117.5 193 122" stroke="#183640" stroke-width="5" stroke-linecap="round"/>
+  <path d="M106 140C96 151.333 95.3333 164.333 104 179" stroke="#183640" stroke-width="8" stroke-linecap="round"/>
+  <path d="M214 140C224 151.333 224.667 164.333 216 179" stroke="#183640" stroke-width="8" stroke-linecap="round"/>
+  <path d="M160 196C145 196 133.667 189 126 175" stroke="#F09A74" stroke-width="10" stroke-linecap="round"/>
+  <path d="M160 196C175 196 186.333 189 194 175" stroke="#F09A74" stroke-width="10" stroke-linecap="round"/>
+  <path d="M122 78C132 56 153 43 185 45C213 47 233 64.3333 245 97" stroke="#183640" stroke-width="14" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,78 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap');
+
+:root {
+  --bg: #f6f1ea;
+  --surface: #fffdf9;
+  --ink-strong: #12343b;
+  --ink-soft: #5d726e;
+  --accent-strong: #ef754c;
+  --font-body: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+  --font-display: 'Space Grotesk', 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', Consolas, monospace;
+  font-family: var(--font-body);
+  line-height: 1.5;
+  font-weight: 400;
+  color: var(--ink-strong);
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.84), transparent 42%),
+    linear-gradient(180deg, #f8f4ed 0%, #f6f1ea 45%, #efe7dc 100%);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  color: var(--ink-strong);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  appearance: none;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}
+
+h1,
+h2 {
+  font-family: var(--font-display);
+  letter-spacing: -0.04em;
+  color: var(--ink-strong);
+}
+
+h1 {
+  margin: 12px 0 18px;
+  font-size: clamp(2.6rem, 4.8vw, 5.2rem);
+  line-height: 0.94;
+}
+
+h2 {
+  font-size: clamp(1.3rem, 2vw, 1.8rem);
+  line-height: 1.05;
+}
+
+p {
+  color: var(--ink-soft);
+}
+
+#root {
+  min-height: 100vh;
+}
