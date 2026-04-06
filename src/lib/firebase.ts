@@ -1,6 +1,6 @@
-import { initializeApp } from 'firebase/app'
+import { initializeApp, type FirebaseApp } from 'firebase/app'
 import { getAnalytics, isSupported } from 'firebase/analytics'
-import { getAuth, GoogleAuthProvider } from 'firebase/auth'
+import { getAuth, GoogleAuthProvider, type Auth } from 'firebase/auth'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -12,18 +12,44 @@ const firebaseConfig = {
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 }
 
-const app = initializeApp(firebaseConfig)
+const requiredFirebaseFields = [
+  firebaseConfig.apiKey,
+  firebaseConfig.authDomain,
+  firebaseConfig.projectId,
+  firebaseConfig.appId,
+]
 
-if (typeof window !== 'undefined' && firebaseConfig.measurementId) {
-  void isSupported().then((supported) => {
-    if (supported) {
-      getAnalytics(app)
+const hasInvalidPlaceholder = requiredFirebaseFields.some(
+  (value) => !value || value.startsWith('your_'),
+)
+
+export const firebaseReady = !hasInvalidPlaceholder
+
+export let firebaseInitError: string | null = null
+export let app: FirebaseApp | null = null
+export let auth: Auth | null = null
+export let googleProvider: GoogleAuthProvider | null = null
+
+if (firebaseReady) {
+  try {
+    app = initializeApp(firebaseConfig)
+    auth = getAuth(app)
+    googleProvider = new GoogleAuthProvider()
+    googleProvider.setCustomParameters({
+      prompt: 'select_account',
+    })
+
+    if (typeof window !== 'undefined' && firebaseConfig.measurementId) {
+      void isSupported().then((supported) => {
+        if (supported && app) {
+          getAnalytics(app)
+        }
+      })
     }
-  })
+  } catch {
+    firebaseInitError =
+      'Firebase yapılandırması geçersiz olduğu için giriş şu an kullanılamıyor.'
+  }
+} else {
+  firebaseInitError = 'Firebase yapılandırması eksik olduğu için giriş şu an kullanılamıyor.'
 }
-
-export const auth = getAuth(app)
-export const googleProvider = new GoogleAuthProvider()
-googleProvider.setCustomParameters({
-  prompt: 'select_account',
-})

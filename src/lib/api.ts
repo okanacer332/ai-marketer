@@ -10,6 +10,10 @@ type AnalyzePayload = {
 }
 
 async function buildAuthHeaders(includeJson = false): Promise<Record<string, string>> {
+  if (!auth) {
+    throw new Error('Giriş şu an yapılandırılmadı.')
+  }
+
   const user = auth.currentUser
   if (!user) {
     throw new Error('Oturum bulunamadı. Lütfen tekrar giriş yapın.')

@@ -26,7 +26,7 @@ import {
   sendChatMessage,
   storeWorkspaceSnapshot,
 } from './lib/api'
-import { auth, googleProvider } from './lib/firebase'
+import { auth, firebaseInitError, firebaseReady, googleProvider } from './lib/firebase'
 import type {
   AnalyzeResponse,
   Analysis,
@@ -709,7 +709,7 @@ function App() {
 
   function openAuthDialog(mode: AuthMode = 'signin') {
     setAuthMode(mode)
-    setAuthError(null)
+    setAuthError(firebaseReady ? null : firebaseInitError || 'Giriş şu an kullanılamıyor.')
     setAuthDialogOpen(true)
   }
 
@@ -795,6 +795,11 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!auth) {
+      setCurrentUser(null)
+      return
+    }
+
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user)
       hasAutoRestoredWorkspaceRef.current = false
@@ -999,6 +1004,11 @@ function App() {
   }
 
   async function handleGoogleContinue() {
+    if (!auth || !googleProvider) {
+      setAuthError(firebaseInitError || 'Google ile giriş şu an kullanılamıyor.')
+      return
+    }
+
     setAuthPending(true)
     setAuthError(null)
 
@@ -1014,6 +1024,11 @@ function App() {
   }
 
   async function handleEmailAuth() {
+    if (!auth) {
+      setAuthError(firebaseInitError || 'E-posta ile giriş şu an kullanılamıyor.')
+      return
+    }
+
     setAuthPending(true)
     setAuthError(null)
 
@@ -1138,6 +1153,10 @@ function App() {
   }
 
   async function handleSignOut() {
+    if (!auth) {
+      return
+    }
+
     suppressAutoRestoreRef.current = true
     hasAutoRestoredWorkspaceRef.current = true
     lastPersistedSnapshotRef.current = null
@@ -1532,6 +1551,7 @@ function App() {
 
       {authDialogOpen ? (
         <AuthDialog
+          authAvailable={Boolean(firebaseReady && auth)}
           authError={authError}
           authPending={authPending}
           email={email}
@@ -1584,6 +1604,7 @@ function App() {
 }
 
 type AuthDialogProps = {
+  authAvailable: boolean
   authError: string | null
   authPending: boolean
   email: string
@@ -1619,6 +1640,7 @@ function GoogleLogo() {
 }
 
 function AuthDialog({
+  authAvailable,
   authError,
   authPending,
   email,
@@ -1652,7 +1674,7 @@ function AuthDialog({
             <button
               type="button"
               className="google-button auth-google-button"
-              disabled={authPending}
+              disabled={authPending || !authAvailable}
               onClick={onPrimaryAction}
             >
               <GoogleLogo />
@@ -1678,6 +1700,7 @@ function AuthDialog({
                   type="email"
                   placeholder="kurucu@markaniz.com"
                   value={email}
+                  disabled={!authAvailable}
                   onChange={(event) => onEmailChange(event.target.value)}
                 />
               </label>
@@ -1687,13 +1710,18 @@ function AuthDialog({
                   type="password"
                   placeholder="Şifrenizi girin"
                   value={password}
+                  disabled={!authAvailable}
                   onChange={(event) => onPasswordChange(event.target.value)}
                 />
               </label>
 
               {authError ? <p className="inline-error">{authError}</p> : null}
 
-              <button type="submit" className="primary-button wide-button" disabled={authPending}>
+              <button
+                type="submit"
+                className="primary-button wide-button"
+                disabled={authPending || !authAvailable}
+              >
                 {authPending ? 'İşleniyor...' : 'Devam et'}
               </button>
             </form>
