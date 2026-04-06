@@ -1280,13 +1280,13 @@ function App() {
               </div>
             ) : null}
 
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={step === 'specialist' ? resetDemo : handleBack}
-            >
-              {step === 'specialist' ? 'Sıfırla' : 'Geri'}
-            </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={handleBack}
+              >
+                Geri
+              </button>
           </div>
         </header>
       ) : null}
