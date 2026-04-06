@@ -4,8 +4,8 @@ from urllib.parse import urlparse
 
 from .scrape import CrawlBundle, PageSnapshot, ResearchPackage
 
-FALLBACK_PROMPT_VERSION = "aylin-fallback-v2"
-FALLBACK_ENGINE_VERSION = "heuristic-fallback-v2"
+FALLBACK_PROMPT_VERSION = "aylin-fallback-v3"
+FALLBACK_ENGINE_VERSION = "heuristic-fallback-v3"
 
 
 def build_fallback_analysis(
@@ -15,7 +15,6 @@ def build_fallback_analysis(
 ) -> dict:
     company_name = infer_company_name(bundle)
     active_goals = goals or ["SEO", "Sosyal Medya", "İçerik", "Ücretli Reklamlar"]
-    research = bundle.research_package
 
     analysis = {
         "companyName": company_name,
@@ -28,12 +27,12 @@ def build_fallback_analysis(
         "competitors": infer_competitors(bundle),
         "opportunity": infer_opportunity(bundle, active_goals, connected_platforms),
         "firstMonthPlan": build_first_month_plan(bundle, active_goals),
-        "palette": infer_palette(bundle.domain, research),
+        "palette": infer_palette(bundle.domain, bundle.research_package),
     }
 
     return {
         "analysis": analysis,
-        "memoryFiles": build_memory_files(analysis, bundle, active_goals, connected_platforms),
+        "memoryFiles": [],
     }
 
 
@@ -63,44 +62,69 @@ def infer_company_name(bundle: CrawlBundle) -> str:
 def infer_sector(bundle: CrawlBundle) -> str:
     research = bundle.research_package
     if research.service_offers and research.product_offers:
-        return "hem hizmet hem ürün/SaaS katmanı olan hibrit bir teknoloji işletmesi"
+        return "Hem hizmet hem ürün katmanı olan hibrit bir dijital işletme"
     if research.product_offers:
-        return "ürün veya SaaS mantığıyla değer sunan dijital bir ürün işletmesi"
+        return "Ürün, platform veya SaaS mantığıyla değer sunan dijital bir işletme"
     if research.service_offers:
-        return "hizmet, çözüm veya danışmanlık odağında çalışan bir işletme"
+        return "Hizmet, çözüm veya danışmanlık odağında çalışan bir işletme"
     if any("software" in page.raw_text.lower() or "saas" in page.raw_text.lower() for page in bundle.pages):
-        return "yazılım veya SaaS odaklı bir dijital işletme"
-    return "web sitesi üzerinden talep toplayan ve teklif anlatan dijital bir işletme"
+        return "Yazılım veya SaaS ekseninde konumlanan dijital bir işletme"
+    return "Web sitesi üzerinden talep toplayan dijital bir işletme"
 
 
 def infer_offer(bundle: CrawlBundle) -> str:
     research = bundle.research_package
-    for candidate in [
-        *research.hero_messages,
-        *research.positioning_signals,
-        *research.offer_signals,
-        bundle.primary_page.description,
-    ]:
-        value = candidate.strip()
-        if value:
-            return value
+    company_name = infer_company_name(bundle)
+    if research.service_offers and research.product_offers:
+        return (
+            f"{company_name}, özel çözüm geliştirme hizmetlerini kendi ürün ve platformlarıyla destekleyen "
+            "hibrit bir teknoloji partneri gibi konumlanıyor."
+        )
+    if research.service_offers:
+        top_services = ", ".join(filter_meaningful_items(research.service_offers, limit=3))
+        if top_services:
+            return f"{company_name}, {top_services} etrafında şekillenen hizmet odaklı bir teknoloji partneri gibi görünüyor."
+    if research.product_offers:
+        top_products = ", ".join(filter_meaningful_items(research.product_offers, limit=3))
+        if top_products:
+            return f"{company_name}, {top_products} etrafında şekillenen ürün ve platform odaklı bir yapı sunuyor."
 
-    return "Site, ziyaretçiye net bir değer önerisi sunmaya çalışan bir ürün veya hizmet anlatısı kuruyor."
+    candidates = [
+        bundle.primary_page.description,
+        *research.positioning_signals,
+        *research.core_value_props,
+        *research.offer_signals,
+        *research.hero_messages,
+    ]
+    for candidate in filter_meaningful_items(candidates, limit=8):
+        return candidate
+
+    return "Site, ziyaretçiye net bir değer önermeye çalışan bir ürün veya hizmet anlatısı kuruyor."
 
 
 def infer_audience(bundle: CrawlBundle) -> str:
     research = bundle.research_package
-    if research.audience_signals:
-        return "Site sinyallerine göre hedef kitle şu kümelerde yoğunlaşıyor: " + "; ".join(research.audience_signals[:4])
+    audience_claims = filter_audience_items(research.audience_claims)
+    audience_signals = filter_audience_items(research.audience_signals)
+
+    if audience_claims:
+        joined = "; ".join(audience_claims[:3])
+        return f"Site sinyallerine göre en olası hedef kitle kümeleri şunlar: {joined}"
+
+    if audience_signals:
+        joined = "; ".join(audience_signals[:3])
+        return f"Site sinyallerine göre hedef kitle şu kümelerde yoğunlaşıyor: {joined}"
 
     text = " ".join(page.raw_text[:1200] for page in bundle.pages).lower()
+    if research.service_offers and research.product_offers:
+        return "Dijital dönüşüm, otomasyon ve yeni ürün geliştirme ihtiyacı olan işletme sahipleri, operasyon ekipleri ve teknoloji karar vericileri"
     if any(token in text for token in ("agency", "ajans", "marka", "brand", "b2b", "enterprise")):
-        return "karar vermeden önce kanıt, uzmanlık ve net ROI görmek isteyen işletme ekipleri ve karar vericiler"
+        return "Karar vermeden önce uzmanlık, güven ve yatırım geri dönüşü görmek isteyen iş ekipleri ve karar vericiler"
     if any(token in text for token in ("shop", "store", "ürün", "kargo", "alışveriş")):
-        return "ürün karşılaştıran, güven sinyali ve net fayda arayan son kullanıcılar veya e-ticaret alıcıları"
+        return "Ürün karşılaştıran, güven sinyali ve net fayda arayan son kullanıcılar veya e-ticaret alıcıları"
     if any(token in text for token in ("demo", "trial", "platform", "dashboard", "integration")):
-        return "önce ürünü anlamak, sonra denemek isteyen dijital ekipler ve araç araştıran profesyoneller"
-    return "web sitesinde netlik, güven ve hızlı karar desteği arayan potansiyel müşteriler"
+        return "Önce ürünü anlamak, sonra denemek isteyen dijital ekipler ve profesyonel alıcılar"
+    return "Web sitesinde netlik, güven ve hızlı karar desteği arayan potansiyel müşteriler"
 
 
 def infer_tone(bundle: CrawlBundle) -> str:
@@ -114,29 +138,30 @@ def infer_tone(bundle: CrawlBundle) -> str:
     ).lower()
 
     if any(token in combined for token in ("dark", "premium", "sharp", "enterprise")):
-        return "premium, kendinden emin ve teknoloji odaklı"
+        return "Premium, kendinden emin ve teknoloji odaklı"
     if any(token in combined for token in ("free", "demo", "trial", "başla", "get", "start")):
-        return "net, hızlı aksiyon çağıran ve dönüşüm odaklı"
-    return "profesyonel, anlaşılır ve güven oluşturmaya çalışan"
+        return "Net, aksiyon çağıran ve dönüşüm odaklı"
+    return "Profesyonel, anlaşılır ve güven oluşturmaya çalışan"
 
 
 def infer_price_position(bundle: CrawlBundle) -> str:
-    signals = " ".join(bundle.site_signals.pricing_signals).lower()
+    pricing_inputs = bundle.site_signals.pricing_signals + bundle.research_package.semantic_zones.get("pricing", [])
+    signals = " ".join(pricing_inputs).lower()
 
-    if any(token in signals for token in ("enterprise", "custom", "teklif")):
-        return "yüksek değerli veya satış ekibi destekli fiyatlama"
+    if any(token in signals for token in ("enterprise", "custom", "özel teklif", "teklif al")):
+        return "Yüksek değerli veya satış ekibi destekli fiyatlama"
     if any(token in signals for token in ("free", "ücretsiz", "$", "usd", "eur", "tl", "₺")):
-        return "fiyat sinyali açık, karşılaştırılabilir ve dönüşüm odaklı"
-    return "fiyat sinyali zayıf; değer üzerinden konumlanmaya çalışan"
+        return "Fiyat sinyali açık, karşılaştırılabilir ve dönüşüm odaklı"
+    return "Fiyat sinyali zayıf; değer üzerinden konumlanmaya çalışan"
 
 
 def infer_competitors(bundle: CrawlBundle) -> list[str]:
     research = bundle.research_package
     if research.service_offers and research.product_offers:
         return [
-            "aynı anda hem yazılım hizmeti hem ürün portföyü taşıyan hibrit teknoloji markaları",
-            "tek bir kategoriye odaklı ama otorite iletişimi daha güçlü rakipler",
-            "vaka anlatımı ve sosyal kanıtı daha görünür kullanan benzer işletmeler",
+            "Hem hizmet hem ürün taşıyan hibrit teknoloji markaları",
+            "Tek kategoriye odaklanan ama otorite iletişimi daha güçlü rakipler",
+            "Vaka anlatımı ve sosyal kanıtı daha görünür kullanan benzer işletmeler",
         ]
 
     technologies = {tech.lower() for tech in bundle.site_signals.technologies}
@@ -144,55 +169,53 @@ def infer_competitors(bundle: CrawlBundle) -> list[str]:
 
     if "shopify" in technologies or "woocommerce" in technologies:
         return [
-            "aynı kategoride güçlü ürün sayfaları kuran niş e-ticaret markaları",
-            "performans pazarlaması güçlü doğrudan tüketici markaları",
-            "fiyat ve güven sinyalini daha net anlatan pazar liderleri",
+            "Aynı kategoride güçlü ürün sayfaları kuran niş e-ticaret markaları",
+            "Performans pazarlaması güçlü doğrudan tüketici markaları",
+            "Fiyat ve güven sinyalini daha net anlatan pazar liderleri",
         ]
     if "pricing" in page_types or any(page.forms for page in bundle.pages):
         return [
-            "aynı hizmeti teklif formu ve vaka anlatımıyla satan ajans veya servis markaları",
-            "kategoride daha güçlü SEO içeriği olan rakipler",
-            "dönüşüm akışı daha kısa ve net olan alternatif çözümler",
+            "Aynı hizmeti teklif formu ve vaka anlatımıyla satan ajans veya servis markaları",
+            "Kategoride daha güçlü SEO içeriği olan rakipler",
+            "Dönüşüm akışı daha kısa ve net olan alternatif çözümler",
         ]
     return [
-        "arama sonuçlarında görünürlüğü daha yüksek kategori oyuncuları",
-        "aynı problemi daha net mesajla çözen dijital rakipler",
-        "sosyal kanıt ve güven öğelerini daha güçlü kullanan markalar",
+        "Arama sonuçlarında görünürlüğü daha yüksek kategori oyuncuları",
+        "Aynı problemi daha net mesajla çözen dijital rakipler",
+        "Sosyal kanıt ve güven öğelerini daha güçlü kullanan markalar",
     ]
 
 
 def infer_opportunity(bundle: CrawlBundle, goals: list[str], connected_platforms: list[str]) -> str:
     research = bundle.research_package
-    strongest_page = choose_strongest_page(bundle.pages)
-    page_hint = strongest_page.title or strongest_page.url
-    cta_hint = bundle.site_signals.cta_texts[0] if bundle.site_signals.cta_texts else "ana teklif"
-    seo_hint = research.seo_signals[0] if research.seo_signals else "içerik yapısı"
-    trust_hint = research.trust_signals[0] if research.trust_signals else "güven katmanı"
+    offer_frame = infer_offer(bundle)
+    proof_claim = first_non_empty(filter_meaningful_items(research.proof_claims)) or first_non_empty(filter_meaningful_items(research.trust_signals)) or "güven katmanı"
+    seo_hint = first_non_empty(research.seo_signals) or "içerik yapısı"
+    cta_hint = first_non_empty(clean_cta_items(research.cta_claims, bundle.site_signals.cta_texts)) or "ana dönüşüm çağrısı"
     platform_hint = (
-        f" Bağlı platformlar hazır olduğunda {', '.join(connected_platforms)} verisiyle bu strateji daha da derinleşebilir."
+        f" Bağlı platformlar hazır olduğunda {', '.join(connected_platforms)} verisiyle bu strateji daha da keskinleşebilir."
         if connected_platforms
         else ""
     )
 
     return (
-        f"En güçlü büyüme fırsatı, {page_hint} etrafında toplanan teklifi daha net bir dönüşüm akışına çevirmek. "
-        f"Site şu anda '{cta_hint}' gibi çağrılarla talep toplamaya çalışıyor; ancak {seo_hint.lower()} ve "
-        f"{trust_hint.lower()} tarafında daha görünür bir anlatı kurulduğunda {', '.join(goals[:3])} birlikte yükseltilebilir."
-        f"{platform_hint}"
+        f"En güçlü büyüme fırsatı, '{offer_frame}' etrafındaki ana teklifi daha görünür ve ikna edici bir talep akışına çevirmek. "
+        f"Şu an {cta_hint.lower()} tarafında bir çağrı var; ancak {proof_claim.lower()} ve {seo_hint.lower()} daha görünür hale getirildiğinde "
+        f"{', '.join(goals[:3])} birlikte daha verimli çalışabilir.{platform_hint}"
     )
 
 
 def build_first_month_plan(bundle: CrawlBundle, goals: list[str]) -> list[str]:
     research = bundle.research_package
-    page_mix = ", ".join(bundle.site_signals.page_mix[:3]) if bundle.site_signals.page_mix else "ana teklif sayfaları"
-    cta_hint = bundle.site_signals.cta_texts[0] if bundle.site_signals.cta_texts else "ana CTA"
-    trust_hint = research.trust_signals[0] if research.trust_signals else "güven sinyalleri"
-    seo_hint = research.seo_signals[0] if research.seo_signals else "içerik fırsatları"
+    primary_cta = first_non_empty(clean_cta_items([], bundle.site_signals.cta_texts)) or first_non_empty(clean_cta_items(research.cta_claims, [])) or "ana CTA"
+    proof_hint = first_non_empty(filter_meaningful_items(research.proof_claims)) or first_non_empty(filter_meaningful_items(research.trust_signals)) or "güven sinyalleri"
+    seo_hint = first_non_empty(research.seo_signals) or "SEO yüzeyi"
+    content_hint = first_non_empty(filter_meaningful_items(research.content_topics)) or first_non_empty(filter_meaningful_items(research.supporting_benefits)) or "teklif etrafındaki içerik kümeleri"
 
     return [
-        f"{page_mix} etrafındaki teklif mimarisini sadeleştir ve '{cta_hint}' çağrısını tek bir birincil dönüşüm akışına bağla.",
-        f"{goals[0]} odağında, {seo_hint.lower()} beslenen 3 güçlü landing page veya içerik kurgusu üret.",
-        f"{trust_hint} etrafında sosyal kanıt, SSS ve form kopyalarını görünür şekilde yeniden düzenle.",
+        f"Teklif hiyerarşisini sadeleştir ve '{primary_cta}' etrafında tek bir ana dönüşüm yolu kur.",
+        f"{goals[0]} odağında {seo_hint.lower()} ve {content_hint.lower()} etrafında üç güçlü açılış sayfası veya içerik kümesi oluştur.",
+        f"{proof_hint} sinyalini form, CTA ve teklif bloklarının etrafında görünür hale getir.",
     ]
 
 
@@ -244,6 +267,8 @@ def build_memory_files(
     connected_platforms: list[str],
 ) -> list[dict]:
     research = bundle.research_package
+    goals_text = ", ".join(goals)
+    connected_text = ", ".join(connected_platforms) if connected_platforms else "Henüz platform bağlanmadı"
     pages_markdown = "\n".join(
         f"- {page.page_type}: {page.title or page.url}"
         for page in bundle.pages[:8]
@@ -258,23 +283,13 @@ def build_memory_files(
         ]
         if line
     ) or "- Belirgin temas sinyali bulunamadı"
-    tech_text = ", ".join(bundle.site_signals.technologies[:8]) if bundle.site_signals.technologies else "Belirgin teknoloji sinyali yok"
-    pricing_text = "\n".join(f"- {value}" for value in bundle.site_signals.pricing_signals[:8]) or "- Açık fiyat sinyali görünmüyor"
-    cta_text = "\n".join(f"- {value}" for value in bundle.site_signals.cta_texts[:10]) or "- Belirgin CTA sinyali sınırlı"
-    trust_text = "\n".join(f"- {value}" for value in research.trust_signals[:8]) or "- Güven sinyali sınırlı"
-    proof_text = "\n".join(f"- {value}" for value in research.proof_points[:8]) or "- Güçlü proof point sinyali sınırlı"
-    audience_text = "\n".join(f"- {value}" for value in research.audience_signals[:8]) or "- Hedef kitle sinyali sınırlı"
-    seo_text = "\n".join(f"- {value}" for value in research.seo_signals[:8]) or "- SEO sinyali sınırlı"
-    visual_text = "\n".join(f"- {value}" for value in research.visual_signals[:6]) or "- Görsel sinyal sınırlı"
-    connected_text = ", ".join(connected_platforms) if connected_platforms else "Henüz platform bağlanmadı"
-    goals_text = ", ".join(goals)
 
     return [
         {
             "id": "business-profile",
             "filename": "isletme-profili.md",
             "title": "İşletme Profili",
-            "blurb": "İş modeli, teklif mimarisi ve hedef kitle okuması.",
+            "blurb": "İş modeli, teklif mimarisi ve hedef kitle özeti.",
             "content": f"""# İşletme Profili
 
 ## Genel Bakış
@@ -287,17 +302,17 @@ def build_memory_files(
 - İstenen odak alanları: {goals_text}
 - Bağlı platformlar: {connected_text}
 
-## Konumlandırma Sinyalleri
-{chr(10).join(f"- {value}" for value in research.positioning_signals[:6]) or "- Belirgin positioning sinyali sınırlı"}
+## Ana Değer Önerileri
+{bullet_list(research.core_value_props, empty='- Ana değer önerisi sinyali sınırlı')}
 
 ## Hizmet / Ürün Yapısı
-{chr(10).join(f"- {value}" for value in (research.service_offers[:8] + research.product_offers[:8])) or "- Teklif kırılımı sınırlı"}
+{bullet_list(research.service_offers + research.product_offers, empty='- Teklif kırılımı sınırlı')}
 
 ## Hedef Kitle Sinyalleri
-{audience_text}
+{bullet_list(research.audience_claims or research.audience_signals, empty='- Hedef kitle sinyali sınırlı')}
 
 ## Fiyat ve Dönüşüm Sinyalleri
-{pricing_text}
+{bullet_list(bundle.site_signals.pricing_signals + research.cta_claims, empty='- Açık fiyat ve dönüşüm sinyali sınırlı')}
 
 ## Temas Noktaları
 {contact_lines}
@@ -316,29 +331,19 @@ def build_memory_files(
 ## Marka Hissi
 - Ton: {analysis['tone']}
 - Ana vaat: {analysis['offer']}
-- Marka adı adayları: {', '.join(research.company_name_candidates[:4]) or analysis['companyName']}
+- Konumlandırma özeti: {first_non_empty(research.positioning_signals) or analysis['offer']}
 
 ## Görsel Yön
-{visual_text}
+{bullet_list(research.visual_signals, empty='- Görsel sinyal sınırlı')}
 
 ## CTA Stili
-{cta_text}
+{bullet_list(research.cta_claims or bundle.site_signals.cta_texts, empty='- CTA sinyali sınırlı')}
 
 ## Güven Dili
-{trust_text}
+{bullet_list(research.proof_claims or research.trust_signals, empty='- Güven sinyali sınırlı')}
 
-## Proof Point Katmanı
-{proof_text}
-
-## Dil Kuralları
-- Fazla teknikleşmeden, somut faydayı önceleyen cümleler kullan.
-- Ziyaretçinin risk algısını azaltan güven dili kur.
-- CTA metinlerinde tek bir ana aksiyonu öne çıkar.
-- İçerikte marka ismi, teklif ve sonuç cümleleri birbiriyle tutarlı akmalı.
-
-## Görsel Palet Önerisi
-- Önerilen palet: {', '.join(analysis['palette'])}
-- Teknoloji sinyalleri: {tech_text}
+## Mesaj Sütunları
+{bullet_list(research.core_value_props + research.supporting_benefits[:4], empty='- Mesaj sütunu sinyali sınırlı')}
 """,
         },
         {
@@ -354,16 +359,10 @@ def build_memory_files(
 - {analysis['competitors'][2]}
 
 ## Pazar Sinyalleri
-{chr(10).join(f"- {value}" for value in research.market_signals[:8]) or "- Pazar sinyali sınırlı"}
-
-## Coğrafya ve Dil Sinyalleri
-{chr(10).join(f"- {value}" for value in (research.geography_signals[:6] + research.language_signals[:6])) or "- Coğrafya / dil sinyali sınırlı"}
+{bullet_list(research.market_signals, empty='- Pazar sinyali sınırlı')}
 
 ## SEO ve İçerik Fırsatları
-{seo_text}
-
-## İçerik Konuları
-{chr(10).join(f"- {value}" for value in research.content_topics[:12]) or "- İçerik konusu sinyali sınırlı"}
+{bullet_list(research.seo_signals + research.content_topics[:6], empty='- SEO ve içerik sinyali sınırlı')}
 
 ## Riskler
 - Güven katmanı zayıfsa teklifin ikna gücü düşer.
@@ -388,16 +387,60 @@ def build_memory_files(
 
 ## Quick Wins
 - Ana teklif sayfasında tek bir birincil CTA belirle ve tüm varyasyonları buna bağla.
-- En güçlü hizmet / ürün kümelerini ayrı landing page mantığıyla yeniden paketle.
+- En güçlü hizmet veya ürün kümelerini ayrı landing page mantığıyla yeniden paketle.
 - Form çevresine sosyal kanıt, süreç anlatımı ve itiraz giderici kısa bloklar ekle.
-- SEO sinyallerinden çıkan eksikleri blog, FAQ ve karşılaştırma içeriklerine dönüştür.
-
-## Kanal Yorumu
-- Öncelikli odak: {goals_text}
-- İlk hafta: teklif netliği ve dönüşüm akışı
-- İkinci hafta: SEO / içerik temeli
-- Üçüncü hafta: yeniden pazarlama ve e-posta mantığı
-- Dördüncü hafta: kampanya optimizasyonu ve ölçüm düzeni
+- SEO sinyallerinden çıkan eksikleri blog, SSS ve karşılaştırma içeriklerine dönüştür.
 """,
         },
     ]
+
+
+def bullet_list(values: list[str], *, empty: str) -> str:
+    cleaned = [value.strip() for value in values if isinstance(value, str) and value.strip()]
+    return "\n".join(f"- {value}" for value in cleaned[:10]) or empty
+
+
+def filter_meaningful_items(values: list[str], *, limit: int = 10) -> list[str]:
+    cleaned: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        text = value.strip()
+        lowered = text.lower()
+        if not text:
+            continue
+        if any(marker in lowered for marker in ("selected", "devamını oku", "read more", "made with", "services projects blog contact", "copyright")):
+            continue
+        if "@" in text and "telefon" in lowered:
+            continue
+        cleaned.append(text)
+    return cleaned[:limit]
+
+
+def filter_audience_items(values: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for value in filter_meaningful_items(values, limit=8):
+        lowered = value.lower()
+        if any(marker in lowered for marker in ("email", "telefon", "konum", "bize ulaşın", "gönder", "24 saat", "nda")):
+            continue
+        cleaned.append(value)
+    return cleaned[:4]
+
+
+def clean_cta_items(primary: list[str], fallback: list[str]) -> list[str]:
+    values: list[str] = []
+    for item in [*primary, *fallback]:
+        if not isinstance(item, str):
+            continue
+        text = item.replace("CTA:", "").strip()
+        if not text:
+            continue
+        values.append(text)
+    return values[:6]
+
+
+def first_non_empty(values: list[str]) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+﻿import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   createUserWithEmailAndPassword,
+  fetchSignInMethodsForEmail,
   onAuthStateChanged,
   signInWithEmailAndPassword,
   signInWithPopup,
@@ -18,9 +19,11 @@ import {
   specialists,
   type Step,
 } from './appData'
+import { RevolutLanding } from './components/landing/RevolutLanding'
 import {
   analyzeWebsite,
   fetchWorkspaceSnapshot,
+  sendChatMessage,
   storeWorkspaceSnapshot,
 } from './lib/api'
 import { auth, googleProvider } from './lib/firebase'
@@ -28,8 +31,10 @@ import type {
   AnalyzeResponse,
   Analysis,
   AnalysisMeta,
+  BrandAssets,
   ChatAttachment,
   ChatMessage,
+  ChatMessageResponse,
   ChatThread,
   ContactSignals,
   CrawlForm,
@@ -51,6 +56,7 @@ type AuthMode = 'signup' | 'signin'
 
 const WORKSPACE_SNAPSHOT_PREFIX = 'acrtech-workspace:'
 const WORKSPACE_EMAIL_SNAPSHOT_PREFIX = 'acrtech-workspace-email:'
+const CHAT_MESSAGE_LIMIT = 10
 const DEFAULT_GOALS = ['SEO', 'Sosyal Medya', 'Ücretli Reklamlar']
 const EMPTY_CRAWL_META: CrawlMeta = {
   status: 'completed',
@@ -128,6 +134,36 @@ function normalizeContactSignals(value: Partial<ContactSignals> | null | undefin
   }
 }
 
+function normalizeBrandAssets(value: Partial<BrandAssets> | null | undefined): BrandAssets | null {
+  if (!value) {
+    return null
+  }
+
+  const normalized: BrandAssets = {
+    brandLogo: typeof value.brandLogo === 'string' ? value.brandLogo : null,
+    favicon: typeof value.favicon === 'string' ? value.favicon : null,
+    touchIcon: typeof value.touchIcon === 'string' ? value.touchIcon : null,
+    socialImage: typeof value.socialImage === 'string' ? value.socialImage : null,
+    manifestUrl: typeof value.manifestUrl === 'string' ? value.manifestUrl : null,
+    maskIcon: typeof value.maskIcon === 'string' ? value.maskIcon : null,
+    tileImage: typeof value.tileImage === 'string' ? value.tileImage : null,
+    candidates: normalizeStringArray(value.candidates),
+  }
+
+  const hasAnyAsset = [
+    normalized.brandLogo,
+    normalized.favicon,
+    normalized.touchIcon,
+    normalized.socialImage,
+    normalized.manifestUrl,
+    normalized.maskIcon,
+    normalized.tileImage,
+    ...normalized.candidates,
+  ].some(Boolean)
+
+  return hasAnyAsset ? normalized : null
+}
+
 function normalizeResearchPackage(
   value: Partial<ResearchPackage> | null | undefined,
 ): ResearchPackage | null {
@@ -138,6 +174,12 @@ function normalizeResearchPackage(
   return {
     companyNameCandidates: normalizeStringArray(value.companyNameCandidates),
     heroMessages: normalizeStringArray(value.heroMessages),
+    semanticZones: Object.entries(normalizeUnknownRecord(value.semanticZones)).reduce<
+      Record<string, string[]>
+    >((result, [key, item]) => {
+      result[key] = normalizeStringArray(item)
+      return result
+    }, {}),
     positioningSignals: normalizeStringArray(value.positioningSignals),
     offerSignals: normalizeStringArray(value.offerSignals),
     serviceOffers: normalizeStringArray(value.serviceOffers),
@@ -152,6 +194,26 @@ function normalizeResearchPackage(
     languageSignals: normalizeStringArray(value.languageSignals),
     marketSignals: normalizeStringArray(value.marketSignals),
     visualSignals: normalizeStringArray(value.visualSignals),
+    coreValueProps: normalizeStringArray(value.coreValueProps),
+    supportingBenefits: normalizeStringArray(value.supportingBenefits),
+    proofClaims: normalizeStringArray(value.proofClaims),
+    audienceClaims: normalizeStringArray(value.audienceClaims),
+    ctaClaims: normalizeStringArray(value.ctaClaims),
+    evidenceBlocks: Array.isArray(value.evidenceBlocks)
+      ? value.evidenceBlocks
+          .filter((item) => Boolean(item && typeof item === 'object'))
+          .map((item) => {
+            const normalizedItem = normalizeUnknownRecord(item)
+            return {
+              type: typeof normalizedItem.type === 'string' ? normalizedItem.type : 'signal',
+              claim: typeof normalizedItem.claim === 'string' ? normalizedItem.claim : '',
+              why: typeof normalizedItem.why === 'string' ? normalizedItem.why : '',
+              confidence: typeof normalizedItem.confidence === 'number' ? normalizedItem.confidence : 0,
+              evidenceUrls: normalizeStringArray(normalizedItem.evidenceUrls),
+            }
+          })
+          .filter((item) => Boolean(item.claim))
+      : [],
   }
 }
 
@@ -418,6 +480,13 @@ function normalizeCrawlPages(value: unknown): CrawlPage[] {
       logoCandidates: normalizeStringArray(item.logoCandidates),
       technologies: normalizeStringArray(item.technologies),
       currencies: normalizeStringArray(item.currencies),
+      zones: Object.entries(normalizeUnknownRecord(item.zones)).reduce<Record<string, string[]>>(
+        (result, [key, zoneValue]) => {
+          result[key] = normalizeStringArray(zoneValue)
+          return result
+        },
+        {},
+      ),
       meta: normalizeStringRecord(item.meta),
     }))
     .filter((item) => Boolean(item.url))
@@ -460,6 +529,7 @@ function normalizeAnalysis(value: Partial<Analysis> | null | undefined): Analysi
     companyName: value.companyName,
     domain: value.domain,
     logoUrl: typeof value.logoUrl === 'string' ? value.logoUrl : null,
+    brandAssets: normalizeBrandAssets(value.brandAssets),
     sector: value.sector,
     offer: value.offer,
     audience: value.audience,
@@ -517,6 +587,36 @@ function normalizeWorkspaceSnapshot(snapshot: Partial<WorkspaceSnapshot> | null 
   }
 }
 
+function buildPersistableSnapshot(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
+  return {
+    ...snapshot,
+    analysisResult: {
+      ...snapshot.analysisResult,
+      chatThread: null,
+    },
+  }
+}
+
+function normalizeChatMessageResponse(
+  value: Partial<ChatMessageResponse> | null | undefined,
+): ChatMessageResponse | null {
+  const normalizedChatThread = normalizeChatThread(value?.chatThread)
+  if (
+    !normalizedChatThread ||
+    !value ||
+    typeof value.remainingUserMessages !== 'number' ||
+    typeof value.maxUserMessages !== 'number'
+  ) {
+    return null
+  }
+
+  return {
+    chatThread: normalizedChatThread,
+    remainingUserMessages: value.remainingUserMessages,
+    maxUserMessages: value.maxUserMessages,
+  }
+}
+
 async function readWorkspaceSnapshot(
 ): Promise<WorkspaceSnapshot | null> {
   try {
@@ -529,7 +629,7 @@ async function readWorkspaceSnapshot(
 async function writeWorkspaceSnapshot(
   snapshot: WorkspaceSnapshot,
 ) {
-  const normalizedSnapshot = normalizeWorkspaceSnapshot(snapshot)
+  const normalizedSnapshot = normalizeWorkspaceSnapshot(buildPersistableSnapshot(snapshot))
   if (!normalizedSnapshot) {
     return
   }
@@ -538,7 +638,7 @@ async function writeWorkspaceSnapshot(
 }
 
 function buildSnapshotSignature(snapshot: WorkspaceSnapshot): string {
-  return JSON.stringify(snapshot)
+  return JSON.stringify(buildPersistableSnapshot(snapshot))
 }
 
 function App() {
@@ -556,9 +656,15 @@ function App() {
   const [activeFileId, setActiveFileId] = useState<string | null>(null)
   const [trialActivated, setTrialActivated] = useState(false)
   const [authPending, setAuthPending] = useState(false)
+  const [authDialogOpen, setAuthDialogOpen] = useState(false)
   const [analysisPending, setAnalysisPending] = useState(false)
+  const [chatPending, setChatPending] = useState(false)
   const [authError, setAuthError] = useState<string | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
+  const [chatError, setChatError] = useState<string | null>(null)
+  const [chatDraft, setChatDraft] = useState('')
+  const [chatRemainingMessages, setChatRemainingMessages] = useState(CHAT_MESSAGE_LIMIT)
+  const [pendingChatMessage, setPendingChatMessage] = useState<string | null>(null)
   const [analysisResult, setAnalysisResult] = useState<AnalyzeResponse | null>(null)
   const analysisRunRef = useRef(0)
   const hasAutoRestoredWorkspaceRef = useRef(false)
@@ -579,6 +685,20 @@ function App() {
   const currentProgressIndex = progressSteps.indexOf(step)
   const isWorkspace = step === 'workspace'
 
+  function openAuthDialog(mode: AuthMode = 'signin') {
+    setAuthMode(mode)
+    setAuthError(null)
+    setAuthDialogOpen(true)
+  }
+
+  function closeAuthDialog() {
+    if (authPending) {
+      return
+    }
+
+    setAuthDialogOpen(false)
+  }
+
   const restoreWorkspace = useCallback((snapshot: WorkspaceSnapshot) => {
     const normalizedSnapshot = normalizeWorkspaceSnapshot(snapshot)
     if (!normalizedSnapshot) {
@@ -598,16 +718,51 @@ function App() {
     setConnectedPlatforms(normalizedSnapshot.connectedPlatforms)
     setAnalysisResult(normalizedSnapshot.analysisResult)
     setAnalysisError(null)
+    setChatError(null)
+    setChatDraft('')
+    setChatPending(false)
+    setPendingChatMessage(null)
     setAnalysisPending(false)
     setAnalysisPhase(7)
     setTrialActivated(normalizedSnapshot.trialActivated)
     setActiveFileId(null)
+    setChatRemainingMessages(
+      Math.max(
+        CHAT_MESSAGE_LIMIT -
+          (normalizedSnapshot.analysisResult.chatThread?.messages.filter(
+            (message) => message.senderType === 'user' && message.messageType === 'user_text',
+          ).length || 0),
+        0,
+      ),
+    )
     moveToStep('workspace')
   }, [])
 
   useEffect(() => {
     purgeLegacyWorkspaceStorage()
   }, [])
+
+  useEffect(() => {
+    const stepRouteMap: Partial<Record<Step, string>> = {
+      specialist: '/',
+      website: '/basla',
+      goals: '/hedefler',
+      integrations: '/baglantilar',
+      workspace: '/calisma-alani',
+    }
+
+    const nextPath = stepRouteMap[step]
+
+    if (!nextPath || typeof window === 'undefined') {
+      return
+    }
+
+    const currentPath = window.location.pathname || '/'
+
+    if (currentPath !== nextPath) {
+      window.history.replaceState({}, '', nextPath)
+    }
+  }, [step])
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -687,6 +842,15 @@ function App() {
   ])
 
   useEffect(() => {
+    const userMessageCount =
+      analysisResult?.chatThread?.messages.filter(
+        (message) => message.senderType === 'user' && message.messageType === 'user_text',
+      ).length || 0
+
+    setChatRemainingMessages(Math.max(CHAT_MESSAGE_LIMIT - userMessageCount, 0))
+  }, [analysisResult?.chatThread])
+
+  useEffect(() => {
     if (
       !currentUser ||
       isWorkspace ||
@@ -721,6 +885,8 @@ function App() {
   function invalidateAnalysisRun() {
     analysisRunRef.current += 1
     setAnalysisPending(false)
+    setChatPending(false)
+    setPendingChatMessage(null)
   }
 
   function handleBack() {
@@ -730,7 +896,7 @@ function App() {
     }
 
     if (step === 'website') {
-      setStep('signup')
+      setStep('specialist')
       return
     }
 
@@ -788,7 +954,7 @@ function App() {
     setSelectedSpecialist(specialistId)
 
     if (!currentUser) {
-      moveToStep('signup')
+      openAuthDialog('signup')
       return
     }
 
@@ -808,6 +974,7 @@ function App() {
 
     try {
       await signInWithPopup(auth, googleProvider)
+      setAuthDialogOpen(false)
       await continueAuthenticatedFlow()
     } catch (error) {
       setAuthError(readFirebaseError(error))
@@ -821,20 +988,40 @@ function App() {
     setAuthError(null)
 
     try {
-      if (authMode === 'signup') {
-        const credentials = await createUserWithEmailAndPassword(auth, email, password)
+      const normalizedEmail = email.trim()
+      const normalizedPassword = password.trim()
+
+      if (!normalizedEmail || !normalizedPassword) {
+        setAuthError('E-posta ve şifre alanlarını doldurun.')
+        return
+      }
+
+      const signInMethods = await fetchSignInMethodsForEmail(auth, normalizedEmail)
+
+      if (signInMethods.includes('google.com') && !signInMethods.includes('password')) {
+        setAuthError('Bu e-posta Google hesabıyla kullanılıyor. Google ile devam edin.')
+        return
+      }
+
+      if (signInMethods.includes('password')) {
+        await signInWithEmailAndPassword(auth, normalizedEmail, normalizedPassword)
+      } else {
+        const credentials = await createUserWithEmailAndPassword(
+          auth,
+          normalizedEmail,
+          normalizedPassword,
+        )
+
         if (name.trim()) {
           await updateProfile(credentials.user, {
             displayName: name.trim(),
           })
         }
-        suppressAutoRestoreRef.current = false
-        moveToStep('website')
-      } else {
-        await signInWithEmailAndPassword(auth, email, password)
-        await continueAuthenticatedFlow()
-        return
       }
+
+      suppressAutoRestoreRef.current = false
+      setAuthDialogOpen(false)
+      await continueAuthenticatedFlow()
     } catch (error) {
       setAuthError(readFirebaseError(error))
     } finally {
@@ -864,6 +1051,10 @@ function App() {
     setAnalysisPhase(1)
     setAnalysisPending(true)
     setAnalysisError(null)
+    setChatError(null)
+    setChatDraft('')
+    setChatRemainingMessages(CHAT_MESSAGE_LIMIT)
+    setPendingChatMessage(null)
     setAnalysisResult(null)
     moveToStep('workspace')
 
@@ -880,7 +1071,7 @@ function App() {
       }
 
       if (!normalizedResult) {
-        throw new Error('Analiz çıktısı beklenen formatta gelmedi.')
+        throw new Error('Analiz Ã§Ä±ktÄ±sÄ± beklenen formatta gelmedi.')
       }
 
       if (currentUser) {
@@ -907,7 +1098,7 @@ function App() {
 
       setAnalysisPhase(4)
       setAnalysisError(
-        error instanceof Error ? error.message : 'Website analizi başarısız oldu.',
+        error instanceof Error ? error.message : 'Website analizi baÅŸarÄ±sÄ±z oldu.',
       )
     } finally {
       if (analysisRunRef.current === runId) {
@@ -928,6 +1119,10 @@ function App() {
     setTrialActivated(false)
     setAnalysisPhase(0)
     setAnalysisError(null)
+    setChatError(null)
+    setChatDraft('')
+    setChatRemainingMessages(CHAT_MESSAGE_LIMIT)
+    setPendingChatMessage(null)
     setStep('specialist')
     setAnalysisResult(null)
     setActiveFileId(null)
@@ -950,17 +1145,66 @@ function App() {
     setTrialActivated(false)
     setAnalysisPhase(0)
     setAnalysisError(null)
+    setChatError(null)
+    setChatDraft('')
+    setChatRemainingMessages(CHAT_MESSAGE_LIMIT)
+    setPendingChatMessage(null)
     setAnalysisResult(null)
     setStep('specialist')
   }
 
-  return (
-    <div className={`app-shell ${isWorkspace ? 'workspace-mode' : ''}`}>
-      {!isWorkspace ? <div className="ambient ambient-one"></div> : null}
-      {!isWorkspace ? <div className="ambient ambient-two"></div> : null}
-      {!isWorkspace ? <div className="ambient ambient-grid"></div> : null}
+  async function handleChatSubmit() {
+    const trimmedMessage = chatDraft.trim()
+    if (!trimmedMessage || !analysisResult || analysisPending || chatPending) {
+      return
+    }
 
-      {!isWorkspace ? (
+    if (chatRemainingMessages <= 0) {
+      setChatError(`Bu oturum iÃ§in maksimum ${CHAT_MESSAGE_LIMIT} mesaj hakkÄ± doldu.`)
+      return
+    }
+
+    setChatPending(true)
+    setChatError(null)
+    setPendingChatMessage(trimmedMessage)
+    setChatDraft('')
+
+    try {
+      const response = normalizeChatMessageResponse(await sendChatMessage(trimmedMessage))
+      if (!response) {
+        throw new Error('Sohbet yanÄ±tÄ± beklenen formatta gelmedi.')
+      }
+
+      setAnalysisResult((current) => {
+        if (!current) {
+          return current
+        }
+
+        return {
+          ...current,
+          chatThread: response.chatThread,
+        }
+      })
+      setChatRemainingMessages(response.remainingUserMessages)
+      setPendingChatMessage(null)
+    } catch (error) {
+      setChatError(
+        error instanceof Error ? error.message : 'Sohbet mesajÄ± gÃ¶nderilemedi.',
+      )
+      setPendingChatMessage(null)
+      setChatDraft(trimmedMessage)
+    } finally {
+      setChatPending(false)
+    }
+  }
+
+  return (
+    <div className={`app-shell ${isWorkspace ? 'workspace-mode' : ''} ${step === 'specialist' ? 'landing-mode' : ''}`}>
+      {!isWorkspace && step !== 'specialist' ? <div className="ambient ambient-one"></div> : null}
+      {!isWorkspace && step !== 'specialist' ? <div className="ambient ambient-two"></div> : null}
+      {!isWorkspace && step !== 'specialist' ? <div className="ambient ambient-grid"></div> : null}
+
+      {!isWorkspace && step !== 'specialist' ? (
         <header className="app-header">
           <div className="brand-lockup">
             <div className="brand-mark">A</div>
@@ -988,14 +1232,14 @@ function App() {
             </div>
           ) : (
             <p className="header-caption">
-              Karmaşık panel yok. Markanı anlayan bir ekip arkadaşı var.
+              Karmaşık panel yok. Markanızı anlayan tek bir çalışma katmanı var.
             </p>
           )}
 
           <div className="header-actions">
             {currentUser ? (
               <div className="user-chip">
-                <span>{currentUser.displayName || currentUser.email || 'Giriş yapıldı'}</span>
+                <span>{currentUser.displayName || currentUser.email || 'Giriş açık'}</span>
                 <button
                   type="button"
                   className="ghost-button compact-button"
@@ -1018,78 +1262,35 @@ function App() {
       ) : null}
 
       {step === 'specialist' ? (
-        <section className="screen landing-screen">
-          <div className="headline-block">
-            <p className="eyebrow">İlk otonom pazarlama departmanın</p>
-            <h1>Uzmanını Seç</h1>
-            <p className="lede">
-              Burası yeni bir analiz aracı açıyormuş gibi değil, işini bilen bir
-              pazarlama uzmanı işe alıyormuş gibi hissettirmeli. Markanı
-              öğrenecek ve işi senin yerine ileri taşıyacak uzmanı seç.
-            </p>
-          </div>
+        <RevolutLanding
+          onStart={() => {
+            void handleSpecialistSelect('aylin')
+          }}
+          onLogin={() => {
+            if (currentUser) {
+              void continueAuthenticatedFlow('aylin')
+              return
+            }
 
-          <div className="specialist-grid">
-            {specialists.map((specialist) => (
-              <article
-                key={specialist.id}
-                className={`specialist-card specialist-${specialist.id} ${specialist.id === selectedSpecialist ? 'selected' : ''}`}
-              >
-                <div className="specialist-avatar">
-                  <img
-                    src={specialist.avatar}
-                    alt={`${specialist.name} avatarı`}
-                    className="specialist-portrait"
-                  />
-                </div>
-
-                <div className="specialist-copy">
-                  <p className="card-kicker">
-                    {specialist.available ? 'Şimdi hazır' : 'Yakında'}
-                  </p>
-                  <h2>{specialist.name}</h2>
-                  <p className="role-line">{specialist.role}</p>
-                  <p className="card-summary">{specialist.summary}</p>
-                </div>
-
-                <div className="skill-list">
-                  {specialist.skills.map((skill) => (
-                    <span key={skill} className="skill-chip">
-                      {skill}
-                    </span>
-                  ))}
-                </div>
-
-                <button
-                  type="button"
-                  className={`card-button ${specialist.available ? 'primary-button' : 'muted-button'}`}
-                  disabled={!specialist.available}
-                  onClick={() => {
-                    void handleSpecialistSelect(specialist.id)
-                  }}
-                >
-                  {specialist.available ? 'Bana yaz' : 'Haber ver'}
-                </button>
-              </article>
-            ))}
-          </div>
-        </section>
+            openAuthDialog('signin')
+          }}
+        />
       ) : null}
 
       {step === 'signup' ? (
         <section className="screen split-screen">
-            <div className="form-panel">
+          <div className="form-panel">
             <p className="eyebrow">{currentSpecialist.name} ile tanış</p>
-            <h1>İlk otonom yapay zekâ pazarlamacın hazır.</h1>
+            <h1>İlk otonom pazarlama katmanınız hazır.</h1>
             <p className="lede compact">
-              Uzun kurulumlarla zaman kaybetmeden teklifini öğrenip stratejiyi
-              kuracak ve kampanyalara dönecek.
+              Uzun kurulumlarla zaman kaybetmeden markayı öğrenir, stratejiyi kurar ve ilk
+              çıktıları hazırlar.
             </p>
 
             {currentUser ? (
               <div className="auth-summary-card">
-                <p className="mini-label">Giriş yapıldı</p>
-                <h2>{currentUser.displayName || 'Tekrar hoş geldin'}</h2>
+                <p className="mini-label">Giriş açık</p>
+                <h2>{currentUser.displayName || 'Tekrar hoş geldiniz'}</h2>
                 <p>{currentUser.email}</p>
                 <button
                   type="button"
@@ -1120,18 +1321,19 @@ function App() {
 
                 <button
                   type="button"
-                  className="google-button"
+                  className="google-button auth-google-button"
                   disabled={authPending}
                   onClick={() => {
                     void handleGoogleContinue()
                   }}
                 >
-                  {authPending ? 'Bağlanıyor...' : 'Google ile devam et'}
+                  <GoogleLogo />
+                  <span>{authPending ? 'Google hesabı bağlanıyor...' : 'Google ile devam et'}</span>
                 </button>
 
                 <div className="divider-row">
                   <span></span>
-                  <p>veya e-posta ve şifre ile gir</p>
+                  <p>veya e-posta ile ilerle</p>
                   <span></span>
                 </div>
 
@@ -1144,10 +1346,10 @@ function App() {
                 >
                   {authMode === 'signup' ? (
                     <label>
-                      İsim
+                      Adınız
                       <input
                         type="text"
-                        placeholder="Aylin sana isminle hitap etsin"
+                        placeholder="Aylin size adınızla hitap etsin"
                         value={name}
                         onChange={(event) => setName(event.target.value)}
                       />
@@ -1167,7 +1369,9 @@ function App() {
                     Şifre
                     <input
                       type="password"
-                      placeholder="Güvenli bir şifre oluştur"
+                      placeholder={
+                        authMode === 'signup' ? 'Güçlü bir şifre oluşturun' : 'Şifrenizi girin'
+                      }
                       value={password}
                       onChange={(event) => setPassword(event.target.value)}
                     />
@@ -1181,7 +1385,7 @@ function App() {
                     disabled={authPending}
                   >
                     {authPending
-                      ? 'Çalışıyor...'
+                      ? 'İşleniyor...'
                       : authMode === 'signup'
                         ? 'Hesap oluştur'
                         : 'Giriş yap'}
@@ -1201,12 +1405,11 @@ function App() {
             </div>
 
             <div className="visual-card">
-              <p className="mini-label">Burayı farklı yapan şey</p>
-              <h2>Aylin düşünme sürecini saklamaz.</h2>
+              <p className="mini-label">Bu yapının farkı</p>
+              <h2>Aylin karar sürecini görünür kılar.</h2>
               <p>
-                Boş bir yükleme çarkı yerine yaptığı işi anlatır, hafıza
-                dosyalarını oluşturur ve sonraki adımlarına yön verecek
-                mantığı açıkça gösterir.
+                Boş bir yükleme ekranı yerine ne yaptığını anlatır, hafıza dosyalarını oluşturur
+                ve sonraki kararları hangi mantıkla verdiğini açık biçimde gösterir.
               </p>
             </div>
           </div>
@@ -1217,10 +1420,10 @@ function App() {
         <section className="screen centered-screen">
           <div className="focus-card">
             <p className="eyebrow">{currentSpecialist.name} ile başla</p>
-            <h1>Website adresini gir, hemen işe koyulalım.</h1>
+            <h1>Website adresini girin, analiz başlasın.</h1>
             <p className="lede compact">
-              Siteyi inceler, önemli sayfaları gezer ve bulguları doğrudan
-              çalışma dosyalarına dönüştürürüz.
+              Siteyi inceler, önemli sayfaları tarar ve bulguları doğrudan çalışma dosyalarına
+              dönüştürür.
             </p>
 
             <label className="website-field">
@@ -1270,9 +1473,18 @@ function App() {
           analysisError={analysisError}
           analysisPending={analysisPending}
           analysisPhase={analysisPhase}
+          chatDraft={chatDraft}
+          chatError={chatError}
+          pendingChatMessage={pendingChatMessage}
+          chatPending={chatPending}
+          chatRemainingMessages={chatRemainingMessages}
           currentSpecialist={currentSpecialist}
           chatThread={chatThread}
           memoryFiles={memoryFiles}
+          onChatDraftChange={setChatDraft}
+          onChatSubmit={() => {
+            void handleChatSubmit()
+          }}
           qualityReview={qualityReview}
           onActivateTrial={() => setTrialActivated(true)}
           onOpenFile={setActiveFileId}
@@ -1283,8 +1495,26 @@ function App() {
           selectedGoals={selectedGoals}
           strategicSummary={strategicSummary}
           trialActivated={trialActivated}
-          userLabel={currentUser?.displayName || currentUser?.email || 'Kullanıcı'}
+          userLabel={currentUser?.displayName || currentUser?.email || 'KullanÄ±cÄ±'}
           website={website}
+        />
+      ) : null}
+
+      {authDialogOpen ? (
+        <AuthDialog
+          authError={authError}
+          authPending={authPending}
+          email={email}
+          onClose={closeAuthDialog}
+          onEmailChange={setEmail}
+          onPasswordChange={setPassword}
+          onPrimaryAction={() => {
+            void handleGoogleContinue()
+          }}
+          onSubmit={() => {
+            void handleEmailAuth()
+          }}
+          password={password}
         />
       ) : null}
 
@@ -1323,25 +1553,146 @@ function App() {
   )
 }
 
+type AuthDialogProps = {
+  authError: string | null
+  authPending: boolean
+  email: string
+  onClose: () => void
+  onEmailChange: (value: string) => void
+  onPasswordChange: (value: string) => void
+  onPrimaryAction: () => void
+  onSubmit: () => void
+  password: string
+}
+
+function GoogleLogo() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="google-mark">
+      <path
+        fill="#4285F4"
+        d="M21.6 12.23c0-.74-.06-1.45-.2-2.13H12v4.04h5.38a4.6 4.6 0 0 1-2 3.02v2.5h3.24c1.9-1.75 2.98-4.33 2.98-7.43Z"
+      />
+      <path
+        fill="#34A853"
+        d="M12 22c2.7 0 4.96-.9 6.62-2.43l-3.24-2.5c-.9.6-2.04.96-3.38.96-2.6 0-4.8-1.76-5.58-4.13H3.08v2.58A10 10 0 0 0 12 22Z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M6.42 13.9A5.98 5.98 0 0 1 6.1 12c0-.66.12-1.3.32-1.9V7.52H3.08A10 10 0 0 0 2 12c0 1.6.38 3.1 1.08 4.48l3.34-2.58Z"
+      />
+      <path
+        fill="#EA4335"
+        d="M12 5.97c1.47 0 2.8.5 3.84 1.5l2.88-2.88C16.95 2.94 14.7 2 12 2 8.08 2 4.7 4.24 3.08 7.52l3.34 2.58C7.2 7.73 9.4 5.97 12 5.97Z"
+      />
+    </svg>
+  )
+}
+
+function AuthDialog({
+  authError,
+  authPending,
+  email,
+  onClose,
+  onEmailChange,
+  onPasswordChange,
+  onPrimaryAction,
+  onSubmit,
+  password,
+}: AuthDialogProps) {
+  return (
+    <div className="modal-backdrop" onClick={onClose} role="presentation">
+      <div
+        className="modal-card auth-dialog-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="auth-dialog-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="modal-header auth-dialog-header">
+          <div>
+            <h2 id="auth-dialog-title">Devam edin</h2>
+          </div>
+          <button type="button" className="ghost-button compact-button" onClick={onClose}>
+            Kapat
+          </button>
+        </div>
+
+        <div className="auth-dialog-grid">
+          <section className="auth-dialog-panel auth-dialog-panel-form">
+            <button
+              type="button"
+              className="google-button auth-google-button"
+              disabled={authPending}
+              onClick={onPrimaryAction}
+            >
+              <GoogleLogo />
+              <span>{authPending ? 'Google hesabı bağlanıyor...' : 'Google ile devam et'}</span>
+            </button>
+
+            <div className="divider-row auth-divider-row">
+              <span></span>
+              <p>veya</p>
+              <span></span>
+            </div>
+
+            <form
+              className="auth-form"
+              onSubmit={(event) => {
+                event.preventDefault()
+                onSubmit()
+              }}
+            >
+              <label>
+                E-posta
+                <input
+                  type="email"
+                  placeholder="kurucu@markaniz.com"
+                  value={email}
+                  onChange={(event) => onEmailChange(event.target.value)}
+                />
+              </label>
+              <label>
+                Şifre
+                <input
+                  type="password"
+                  placeholder="Şifrenizi girin"
+                  value={password}
+                  onChange={(event) => onPasswordChange(event.target.value)}
+                />
+              </label>
+
+              {authError ? <p className="inline-error">{authError}</p> : null}
+
+              <button type="submit" className="primary-button wide-button" disabled={authPending}>
+                {authPending ? 'İşleniyor...' : 'Devam et'}
+              </button>
+            </form>
+          </section>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default App
 
 function readFirebaseError(error: unknown) {
   if (!error || typeof error !== 'object' || !('code' in error)) {
-    return 'Giriş işlemi başarısız oldu.'
+    return 'Giriş işlemi tamamlanamadı.'
   }
 
   const code = String(error.code)
 
   if (code.includes('popup-closed')) {
-    return 'Google penceresi giriş tamamlanmadan kapatıldı.'
+    return 'Google penceresi tamamlanmadan kapatıldı.'
   }
 
   if (code.includes('invalid-credential')) {
-    return 'E-posta veya şifre hatalı görünüyor.'
+    return 'E-posta veya şifre doğrulanamadı.'
   }
 
   if (code.includes('email-already-in-use')) {
-    return 'Bu e-posta zaten kayıtlı. Giriş yap moduna geç.'
+    return 'Bu e-posta zaten kayıtlı. Giriş yap seçeneğini kullanın.'
   }
 
   if (code.includes('weak-password')) {
@@ -1349,10 +1700,10 @@ function readFirebaseError(error: unknown) {
   }
 
   if (code.includes('too-many-requests')) {
-    return 'Çok fazla deneme yapıldı. Biraz bekleyip tekrar dene.'
+    return 'Çok fazla deneme yapıldı. Kısa süre sonra tekrar deneyin.'
   }
 
-  return 'Giriş işlemi başarısız oldu.'
+  return 'Giriş işlemi tamamlanamadı.'
 }
 
 type GoalsStepProps = {
@@ -1365,11 +1716,11 @@ function GoalsStep({ selectedGoals, onToggle, onContinue }: GoalsStepProps) {
   return (
     <section className="screen centered-screen">
       <div className="focus-card large-card">
-        <p className="eyebrow">Aylin'in önceliklerini belirle</p>
-        <h1>Nelerde desteğe ihtiyacın var?</h1>
+        <p className="eyebrow">Aylin’in odağını belirleyin</p>
+        <h1>Hangi alanlarda destek istiyorsunuz?</h1>
         <p className="lede compact">
-          Birini ya da birkaçını seç. Aylin bu sinyalleri analizi ve ilk ay
-          planını ağırlıklandırmak için kullanacak.
+          Birini ya da birkaçını seçin. Aylin bu sinyalleri analiz kapsamını ve ilk ay planını
+          ağırlıklandırmak için kullanacak.
         </p>
 
         <div className="goal-grid">
@@ -1415,10 +1766,10 @@ function IntegrationsStep({
     <section className="screen centered-screen">
       <div className="focus-card large-card">
         <p className="eyebrow">Opsiyonel bağlantılar</p>
-        <h1>Platformlarını bağla</h1>
+        <h1>Platformlarınızı bağlayın</h1>
         <p className="lede compact">
-          Bu hesaplar Aylin'in daha sonra daha hızlı ilerlemesini sağlar. Ama
-          istersen şimdilik atlayıp sadece website verisiyle de başlayabilirsin.
+          Bu hesaplar Aylin’in daha hızlı ilerlemesini sağlar. İsterseniz şimdilik atlayıp yalnızca
+          website verisiyle de başlayabilirsiniz.
         </p>
 
         <div className="platform-grid">
@@ -1659,9 +2010,16 @@ type WorkspaceStepProps = {
   analysisError: string | null
   analysisPending: boolean
   analysisPhase: number
+  chatDraft: string
+  chatError: string | null
+  pendingChatMessage: string | null
+  chatPending: boolean
+  chatRemainingMessages: number
   chatThread: ChatThread | null
   currentSpecialist: (typeof specialists)[number]
   memoryFiles: MemoryFile[]
+  onChatDraftChange: (value: string) => void
+  onChatSubmit: () => void
   qualityReview: QualityReview | null
   onActivateTrial: () => void
   onOpenFile: (fileId: string) => void
@@ -1680,9 +2038,16 @@ function WorkspaceStep({
   analysisError,
   analysisPending,
   analysisPhase,
+  chatDraft,
+  chatError,
+  pendingChatMessage,
+  chatPending,
+  chatRemainingMessages,
   chatThread,
   currentSpecialist,
   memoryFiles,
+  onChatDraftChange,
+  onChatSubmit,
   qualityReview,
   onActivateTrial,
   onOpenFile,
@@ -1711,46 +2076,56 @@ function WorkspaceStep({
   const workspaceTitle = trialActivated
     ? 'Aylin aktif'
     : analysisPending
-      ? 'Canlı analiz'
+      ? 'CanlÄ± analiz'
       : analysisError
         ? 'Analiz durduruldu'
-        : 'Analiz tamamlandı'
+        : 'Analiz tamamlandÄ±'
   const specialistAvatar = currentSpecialist.avatar
   const visibleFilePreviews = memoryFiles.slice(0, 4)
   const threadMessages = chatThread?.messages ?? []
-  const historyTitle = chatThread?.title || `${analysis.companyName} için ilk analiz`
+  const isChatLocked = chatRemainingMessages <= 0
+  const historyTitle = chatThread?.title || `${analysis.companyName} iÃ§in ilk analiz`
   const [dismissedLogoUrl, setDismissedLogoUrl] = useState<string | null>(null)
   const [expandedInlineFileId, setExpandedInlineFileId] = useState<string | null | undefined>(undefined)
   const [copiedFileId, setCopiedFileId] = useState<string | null>(null)
   const [showAllKnowledgeFiles, setShowAllKnowledgeFiles] = useState(false)
+  const chatThreadRef = useRef<HTMLDivElement | null>(null)
+  const preferredWorkspaceLogoUrl =
+    analysis.brandAssets?.brandLogo ||
+    analysis.brandAssets?.favicon ||
+    analysis.brandAssets?.touchIcon ||
+    analysis.logoUrl ||
+    null
   const workspaceLogoUrl =
-    analysis.logoUrl && dismissedLogoUrl !== analysis.logoUrl ? analysis.logoUrl : null
+    preferredWorkspaceLogoUrl && dismissedLogoUrl !== preferredWorkspaceLogoUrl
+      ? preferredWorkspaceLogoUrl
+      : null
   const livePrimaryAttachments = buildLiveMemoryAttachments(memoryFiles, 0, 2, [
     {
       id: 'business-profile',
       filename: 'business-profile.md',
-      title: `${analysis.companyName} — İşletme Profili`,
-      blurb: 'Şirketin teklif yapısı, hedef kitlesi ve iş modeli netleştiriliyor.',
+      title: `${analysis.companyName} â€” Ä°ÅŸletme Profili`,
+      blurb: 'Åirketin teklif yapÄ±sÄ±, hedef kitlesi ve iÅŸ modeli netleÅŸtiriliyor.',
     },
     {
       id: 'brand-guidelines',
       filename: 'brand-guidelines.md',
-      title: `${analysis.companyName} — Marka Kılavuzu`,
-      blurb: 'Görsel kimlik, ton ve ana mesaj sütunları çalışma alanına kaydediliyor.',
+      title: `${analysis.companyName} â€” Marka KÄ±lavuzu`,
+      blurb: 'GÃ¶rsel kimlik, ton ve ana mesaj sÃ¼tunlarÄ± Ã§alÄ±ÅŸma alanÄ±na kaydediliyor.',
     },
   ])
   const liveSecondaryAttachments = buildLiveMemoryAttachments(memoryFiles, 2, 4, [
     {
       id: 'market-research',
       filename: 'market-research.md',
-      title: `${analysis.companyName} — Pazar Araştırması`,
-      blurb: 'Kategori, rekabet ve büyüme fırsatları ikinci dalga dosyalara ekleniyor.',
+      title: `${analysis.companyName} â€” Pazar AraÅŸtÄ±rmasÄ±`,
+      blurb: 'Kategori, rekabet ve bÃ¼yÃ¼me fÄ±rsatlarÄ± ikinci dalga dosyalara ekleniyor.',
     },
     {
       id: 'strategy',
       filename: 'strategy.md',
-      title: `${analysis.companyName} — Pazarlama Stratejisi`,
-      blurb: 'İlk 30 günün öncelikleri ve büyüme kaldıraçları strateji dosyasına yazılıyor.',
+      title: `${analysis.companyName} â€” Pazarlama Stratejisi`,
+      blurb: 'Ä°lk 30 gÃ¼nÃ¼n Ã¶ncelikleri ve bÃ¼yÃ¼me kaldÄ±raÃ§larÄ± strateji dosyasÄ±na yazÄ±lÄ±yor.',
     },
   ])
   const resolvedExpandedInlineFileId =
@@ -1762,42 +2137,90 @@ function WorkspaceStep({
   const knowledgeFiles = showAllKnowledgeFiles ? memoryFiles : memoryFiles.slice(0, 2)
   const firstWorkflowNotes = [
     {
-      title: 'İçeriği inceliyorum',
-      detail: 'Ana sayfa, hizmetler ve teklif yapısını tek bir akışta toparlıyorum.',
+      title: 'Ä°Ã§eriÄŸi inceliyorum',
+      detail: 'Ana sayfa, hizmetler ve teklif yapÄ±sÄ±nÄ± tek bir akÄ±ÅŸta toparlÄ±yorum.',
     },
     {
-      title: 'Marka sinyallerini çıkarıyorum',
-      detail: 'Dil, konumlandırma ve güven katmanlarını ilk çerçeveye yerleştiriyorum.',
+      title: 'Marka sinyallerini Ã§Ä±karÄ±yorum',
+      detail: 'Dil, konumlandÄ±rma ve gÃ¼ven katmanlarÄ±nÄ± ilk Ã§erÃ§eveye yerleÅŸtiriyorum.',
     },
     {
-      title: 'İlk dosyaları hazırlıyorum',
-      detail: 'İşletme profili ve marka kılavuzu için temel iskeleti kuruyorum.',
+      title: 'Ä°lk dosyalarÄ± hazÄ±rlÄ±yorum',
+      detail: 'Ä°ÅŸletme profili ve marka kÄ±lavuzu iÃ§in temel iskeleti kuruyorum.',
     },
   ]
   const firstDropNotes = [
     {
-      title: 'Teklif yapısını netliyorum',
-      detail: 'Hizmetleri, ürünleri ve hedef kitleyi ortak bir profilde birleştiriyorum.',
+      title: 'Teklif yapÄ±sÄ±nÄ± netliyorum',
+      detail: 'Hizmetleri, Ã¼rÃ¼nleri ve hedef kitleyi ortak bir profilde birleÅŸtiriyorum.',
     },
     {
       title: 'Marka dilini sabitliyorum',
-      detail: 'Renk, ton ve CTA yapısını marka kılavuzuna işliyorum.',
+      detail: 'Renk, ton ve CTA yapÄ±sÄ±nÄ± marka kÄ±lavuzuna iÅŸliyorum.',
     },
   ]
   const secondDropNotes = [
     {
-      title: 'Pazarı tarıyorum',
-      detail: 'Kategori fırsatlarını, içerik boşluklarını ve rekabet sinyallerini ayıklıyorum.',
+      title: 'PazarÄ± tarÄ±yorum',
+      detail: 'Kategori fÄ±rsatlarÄ±nÄ±, iÃ§erik boÅŸluklarÄ±nÄ± ve rekabet sinyallerini ayÄ±klÄ±yorum.',
     },
     {
-      title: 'İlk yol haritasını yazıyorum',
-      detail: 'İlk 30 gün için uygulanabilir büyüme adımlarını strateji dosyasına aktarıyorum.',
+      title: 'Ä°lk yol haritasÄ±nÄ± yazÄ±yorum',
+      detail: 'Ä°lk 30 gÃ¼n iÃ§in uygulanabilir bÃ¼yÃ¼me adÄ±mlarÄ±nÄ± strateji dosyasÄ±na aktarÄ±yorum.',
     },
   ]
   const requestedTopics =
     selectedGoals.length > 0
       ? selectedGoals.join(', ')
-      : 'Sosyal Medya, E-posta Pazarlaması, Ücretli Reklamlar, SEO, İçerik Yazımı'
+      : 'Sosyal Medya, E-posta PazarlamasÄ±, Ãœcretli Reklamlar, SEO, Ä°Ã§erik YazÄ±mÄ±'
+  const shouldShowTrialCta =
+    !analysisPending &&
+    !analysisError &&
+    (threadMessages.length > 0 || analysisPhase >= 7)
+  const formatMessageTime = (value?: string | null) => {
+    const date = value ? new Date(value) : new Date()
+    if (Number.isNaN(date.getTime())) {
+      return ''
+    }
+
+    return new Intl.DateTimeFormat('tr-TR', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date)
+  }
+
+  useEffect(() => {
+    const element = chatThreadRef.current
+    if (!element) {
+      return
+    }
+
+    const handle = window.requestAnimationFrame(() => {
+      element.scrollTo({
+        top: element.scrollHeight,
+        behavior: 'smooth',
+      })
+    })
+
+    return () => window.cancelAnimationFrame(handle)
+  }, [
+    analysisPending,
+    analysisPhase,
+    chatPending,
+    pendingChatMessage,
+    chatError,
+    analysisError,
+    threadMessages.length,
+  ])
+
+  function renderMessageMeta(author: string, timestamp?: string | null) {
+    return (
+      <div className="message-meta">
+        <p className="message-author">{author}</p>
+        <span className="message-time">{formatMessageTime(timestamp)}</span>
+      </div>
+    )
+  }
 
   function copyFileContent(file: MemoryFile) {
     if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
@@ -1854,16 +2277,16 @@ function WorkspaceStep({
     }))
   }
 
-  function renderAssistantMessage(content: ReactNode, className = '') {
+  function renderAssistantMessage(content: ReactNode, className = '', timestamp?: string | null) {
     return (
       <div className="assistant-chat-row">
         <img
           src={specialistAvatar}
-          alt={`${currentSpecialist.name} avatarı`}
+          alt={`${currentSpecialist.name} avatarÄ±`}
           className="assistant-chat-avatar"
         />
         <article className={`chat-message assistant-message ${className}`.trim()}>
-          <p className="message-author">{currentSpecialist.name}</p>
+          {renderMessageMeta(currentSpecialist.name, timestamp)}
           {content}
         </article>
       </div>
@@ -1874,9 +2297,9 @@ function WorkspaceStep({
     return (
       <div className="user-chat-row">
         <article className="chat-message user-message">
-          <p className="message-author">{userLabel}</p>
+          {renderMessageMeta(userLabel)}
           <p>
-            Web sitemiz "{normalizeWebsite(website)}" {requestedTopics} konularında bana yardımcı
+            Web sitemiz "{normalizeWebsite(website)}" {requestedTopics} konularÄ±nda bana yardÄ±mcÄ±
             olabilir misiniz?
           </p>
         </article>
@@ -1966,8 +2389,8 @@ function WorkspaceStep({
         return {
           id: attachment.fileId || attachment.id || attachment.filename,
           filename: attachment.filename || 'memory-file.md',
-          title: attachment.title || attachment.filename || 'Hafıza dosyası',
-          blurb: attachment.blurb || attachment.title || 'Dosya hazırlanıyor.',
+          title: attachment.title || attachment.filename || 'HafÄ±za dosyasÄ±',
+          blurb: attachment.blurb || attachment.title || 'Dosya hazÄ±rlanÄ±yor.',
           content: '',
           version: attachment.version ?? null,
           isCurrent: attachment.isCurrent ?? true,
@@ -2010,7 +2433,7 @@ function WorkspaceStep({
                   <span className="report-card-kind">Dosya</span>
                 </div>
                 <span className={`report-card-status ${file.isPlaceholder ? 'pending' : ''}`}>
-                  {file.isPlaceholder ? 'Sırada' : file.version ? `v${file.version}` : 'Kaydedildi'}
+                  {file.isPlaceholder ? 'SÄ±rada' : file.version ? `v${file.version}` : 'Kaydedildi'}
                 </span>
               </div>
               {isExpanded ? (
@@ -2022,7 +2445,7 @@ function WorkspaceStep({
               )}
               <div className="report-card-actions">
                 {file.isPlaceholder ? (
-                  <span className="report-card-note">İçerik tamamlanınca belgeyi açabileceksin.</span>
+                  <span className="report-card-note">Ä°Ã§erik tamamlanÄ±nca belgeyi aÃ§abileceksin.</span>
                 ) : (
                   <>
                     <button
@@ -2030,7 +2453,7 @@ function WorkspaceStep({
                       className="ghost-button compact-button"
                       onClick={() => setExpandedInlineFileId(isExpanded ? null : file.id)}
                     >
-                      {isExpanded ? 'Daralt' : 'Genişlet'}
+                      {isExpanded ? 'Daralt' : 'GeniÅŸlet'}
                     </button>
                     <button
                       type="button"
@@ -2054,7 +2477,7 @@ function WorkspaceStep({
                         })
                       }
                     >
-                      {copiedFileId === file.id ? '✓ Kopyalandı' : 'Kopyala'}
+                      {copiedFileId === file.id ? 'âœ“ KopyalandÄ±' : 'Kopyala'}
                     </button>
                   </>
                 )}
@@ -2070,31 +2493,69 @@ function WorkspaceStep({
     return (
       <div className="cta-panel">
         <div>
-          <p className="mini-label">Hazır olduğunda</p>
-          <h2>Aylin'i işe al</h2>
+          <p className="mini-label">HazÄ±r olduÄŸunda</p>
+          <h2>Aylin'i iÅŸe al</h2>
           <p>
-            3 günlük ücretsiz deneme. Hafıza dosyaları, strateji ve operasyon ritmi
-            sende kalsın.
+            3 gÃ¼nlÃ¼k Ã¼cretsiz deneme. HafÄ±za dosyalarÄ±, strateji ve operasyon ritmi
+            sende kalsÄ±n.
           </p>
         </div>
 
         <button type="button" className="primary-button" onClick={onActivateTrial}>
-          {trialActivated ? 'Deneme aktif' : "Aylin'i işe al"}
+          {trialActivated ? 'Deneme aktif' : "Aylin'i iÅŸe al"}
         </button>
       </div>
     )
   }
 
-  function renderFinalSummary(content: string) {
+  function renderFinalSummary(content: string, timestamp?: string | null) {
     return (
       <div>
-        {renderAssistantMessage(renderTextBlocks(content), 'final-message narrative-message')}
-        {renderTrialCta()}
+        {renderAssistantMessage(renderTextBlocks(content), 'final-message narrative-message', timestamp)}
       </div>
     )
   }
 
+  function renderPendingUserMessage(content: string) {
+    return (
+      <div className="user-chat-row">
+        <article className="chat-message user-message pending-user-message">
+          {renderMessageMeta(userLabel)}
+          {renderTextBlocks(content)}
+        </article>
+      </div>
+    )
+  }
+
+  function renderTypingIndicator() {
+    return renderAssistantMessage(
+      <div className="typing-indicator">
+        <div className="typing-indicator-copy">
+          <strong>Aylin yazÄ±yor</strong>
+          <p>MesajÄ±nÄ± mevcut analiz ve hafÄ±za dosyalarÄ±yla birlikte yorumluyorum.</p>
+        </div>
+        <div className="typing-dots" aria-label="YazÄ±yor">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+      </div>,
+      'typing-message',
+    )
+  }
+
   function renderPersistedMessage(message: ChatMessage) {
+    if (message.senderType === 'user') {
+      return (
+        <div key={message.id} className="user-chat-row">
+          <article className="chat-message user-message">
+            {renderMessageMeta(userLabel, message.createdAt)}
+            {renderTextBlocks(message.content)}
+          </article>
+        </div>
+      )
+    }
+
     if (message.messageType === 'process') {
       return <div key={message.id}>{renderWorkflowNotes(firstWorkflowNotes, firstWorkflowNotes.length, true)}</div>
     }
@@ -2110,7 +2571,7 @@ function WorkspaceStep({
 
       return (
         <div key={message.id}>
-          {renderAssistantMessage(renderTextBlocks(message.content))}
+          {renderAssistantMessage(renderTextBlocks(message.content), '', message.createdAt)}
           {renderWorkflowNotes(isSecondDrop ? secondDropNotes : firstDropNotes, undefined, true)}
           {renderMemoryCards(message.attachments)}
         </div>
@@ -2118,22 +2579,26 @@ function WorkspaceStep({
     }
 
     if (message.messageType === 'analysis_summary') {
-      return <div key={message.id}>{renderFinalSummary(message.content)}</div>
+      return <div key={message.id}>{renderFinalSummary(message.content, message.createdAt)}</div>
     }
 
-    return <div key={message.id}>{renderAssistantMessage(renderTextBlocks(message.content))}</div>
+    return (
+      <div key={message.id}>
+        {renderAssistantMessage(renderTextBlocks(message.content), '', message.createdAt)}
+      </div>
+    )
   }
 
   function renderLiveThread() {
     const finalSummaryLines = [
-      'Dosyaları kaydettim.',
+      'DosyalarÄ± kaydettim.',
       analysis.opportunity
-        ? `Öne çıkan büyüme fırsatı: ${analysis.opportunity}`
+        ? `Ã–ne Ã§Ä±kan bÃ¼yÃ¼me fÄ±rsatÄ±: ${analysis.opportunity}`
         : strategicSummary?.primaryGrowthLever
-          ? `Öne çıkan büyüme fırsatı: ${strategicSummary.primaryGrowthLever}`
+          ? `Ã–ne Ã§Ä±kan bÃ¼yÃ¼me fÄ±rsatÄ±: ${strategicSummary.primaryGrowthLever}`
           : '',
       qualityReview?.score
-        ? `Analiz kapsam puanı şu anda ${qualityReview.score}/100.`
+        ? `Analiz kapsam puanÄ± ÅŸu anda ${qualityReview.score}/100.`
         : '',
     ].filter(Boolean)
 
@@ -2141,7 +2606,7 @@ function WorkspaceStep({
       <>
         {renderAssistantMessage(
           <p>
-            Web sitenizi inceleyelim ve pazarlama temellerinizi oluşturmaya başlayalım.
+            Web sitenizi inceleyelim ve pazarlama temellerinizi oluÅŸturmaya baÅŸlayalÄ±m.
           </p>,
         )}
 
@@ -2152,11 +2617,11 @@ function WorkspaceStep({
         {analysisPhase >= 2 ? (
           renderAssistantMessage(
             <p>
-              İlk görünüm güçlü. {analysis.companyName},{' '}
-              {strategicSummary?.positioning || analysis.offer} etrafında
-              konumlanıyor gibi görünüyor. En olası hedef kitlen{' '}
-              {strategicSummary?.bestFitAudience || analysis.audience} ve ayırıcı
-              çizgi {strategicSummary?.differentiation || analysis.tone}.
+              Ä°lk gÃ¶rÃ¼nÃ¼m gÃ¼Ã§lÃ¼. {analysis.companyName},{' '}
+              {strategicSummary?.positioning || analysis.offer} etrafÄ±nda
+              konumlanÄ±yor gibi gÃ¶rÃ¼nÃ¼yor. En olasÄ± hedef kitlen{' '}
+              {strategicSummary?.bestFitAudience || analysis.audience} ve ayÄ±rÄ±cÄ±
+              Ã§izgi {strategicSummary?.differentiation || analysis.tone}.
             </p>,
           )
         ) : null}
@@ -2164,7 +2629,7 @@ function WorkspaceStep({
         {analysisPhase >= 3 && !analysisError ? (
           <div>
             {renderAssistantMessage(
-              <p>Önce işletme profili ve marka kılavuzunu oluşturmaya başlıyorum.</p>,
+              <p>Ã–nce iÅŸletme profili ve marka kÄ±lavuzunu oluÅŸturmaya baÅŸlÄ±yorum.</p>,
             )}
             {renderWorkflowNotes(firstDropNotes, Math.min(Math.max(analysisPhase - 2, 1), firstDropNotes.length))}
             {renderMemoryCards(livePrimaryAttachments)}
@@ -2174,11 +2639,11 @@ function WorkspaceStep({
         {analysisPhase >= 5 && !analysisError ? (
           renderAssistantMessage(
             <p>
-              Şimdi biraz daha derine iniyorum. En güçlü kaldıraç{' '}
-              {strategicSummary?.primaryGrowthLever || analysis.opportunity} çizgisinde
-              görünüyor. İçerik açısından ise{' '}
-              {strategicSummary?.contentAngle || 'daha güçlü bir konu kümelenmesi'}
-              öne çıkıyor.
+              Åimdi biraz daha derine iniyorum. En gÃ¼Ã§lÃ¼ kaldÄ±raÃ§{' '}
+              {strategicSummary?.primaryGrowthLever || analysis.opportunity} Ã§izgisinde
+              gÃ¶rÃ¼nÃ¼yor. Ä°Ã§erik aÃ§Ä±sÄ±ndan ise{' '}
+              {strategicSummary?.contentAngle || 'daha gÃ¼Ã§lÃ¼ bir konu kÃ¼melenmesi'}
+              Ã¶ne Ã§Ä±kÄ±yor.
             </p>,
           )
         ) : null}
@@ -2186,7 +2651,7 @@ function WorkspaceStep({
         {analysisPhase >= 6 && !analysisError ? (
           <div>
             {renderAssistantMessage(
-              <p>Şimdi pazar araştırması ve strateji dosyalarını netleştiriyorum.</p>,
+              <p>Åimdi pazar araÅŸtÄ±rmasÄ± ve strateji dosyalarÄ±nÄ± netleÅŸtiriyorum.</p>,
             )}
             {renderWorkflowNotes(secondDropNotes, Math.min(Math.max(analysisPhase - 5, 1), secondDropNotes.length))}
             {renderMemoryCards(liveSecondaryAttachments)}
@@ -2214,7 +2679,7 @@ function WorkspaceStep({
                 src={workspaceLogoUrl}
                 alt={`${analysis.companyName} logosu`}
                 className="workspace-logo-image"
-                onError={() => setDismissedLogoUrl(analysis.logoUrl)}
+                onError={() => setDismissedLogoUrl(preferredWorkspaceLogoUrl)}
               />
             ) : (
               brandMark || 'AI'
@@ -2222,10 +2687,10 @@ function WorkspaceStep({
           </div>
           <div className="workspace-brand-copy">
             <h2>{analysis.companyName}</h2>
-            <p className="workspace-subtle">{currentSpecialist.name} çalışma alanı</p>
+            <p className="workspace-subtle">{currentSpecialist.name} Ã§alÄ±ÅŸma alanÄ±</p>
           </div>
-          <button type="button" className="workspace-brand-toggle" aria-label="Menüyü daralt">
-            ‹
+          <button type="button" className="workspace-brand-toggle" aria-label="MenÃ¼yÃ¼ daralt">
+            â€¹
           </button>
         </div>
 
@@ -2254,35 +2719,35 @@ function WorkspaceStep({
           <button type="button" className="dm-card">
             <img
               src={specialistAvatar}
-              alt={`${currentSpecialist.name} avatarı`}
+              alt={`${currentSpecialist.name} avatarÄ±`}
               className="dm-avatar-image"
             />
             <span>
               <strong>{currentSpecialist.name}</strong>
-              <small>AI Dijital Pazarlamacı</small>
+              <small>AI Dijital PazarlamacÄ±</small>
             </span>
           </button>
         </div>
 
         <div className="sidebar-group">
-          <p className="sidebar-heading">Sohbet Geçmişi</p>
+          <p className="sidebar-heading">Sohbet GeÃ§miÅŸi</p>
           <label className="sidebar-search">
-            <span>⌕</span>
-            <input type="text" value="" readOnly placeholder="Konuşmalarda ara..." />
+            <span>âŒ•</span>
+            <input type="text" value="" readOnly placeholder="KonuÅŸmalarda ara..." />
           </label>
           <button type="button" className="history-card">
             <img
               src={specialistAvatar}
-              alt={`${currentSpecialist.name} avatarı`}
+              alt={`${currentSpecialist.name} avatarÄ±`}
               className="dm-avatar-image subtle"
             />
             <span>
               <strong>{historyTitle}</strong>
-              <small>{selectedGoals.slice(0, 2).join(' • ') || 'Başlangıç oturumu'}</small>
+              <small>{selectedGoals.slice(0, 2).join(' â€¢ ') || 'BaÅŸlangÄ±Ã§ oturumu'}</small>
             </span>
           </button>
           <button type="button" className="history-link">
-            Tüm konuşmaları gör
+            TÃ¼m konuÅŸmalarÄ± gÃ¶r
           </button>
         </div>
 
@@ -2297,10 +2762,10 @@ function WorkspaceStep({
             Entegrasyonlar
           </button>
           <button type="button" className="sidebar-link">
-            Paylaş & Kazan
+            PaylaÅŸ & Kazan
           </button>
           <button type="button" className="sidebar-link">
-            Bize Ulaş
+            Bize UlaÅŸ
           </button>
         </nav>
 
@@ -2311,10 +2776,10 @@ function WorkspaceStep({
           </div>
           <div className="workspace-footer-actions">
             <button type="button" className="ghost-button compact-button" onClick={onRestart}>
-              Baştan başla
+              BaÅŸtan baÅŸla
             </button>
             <button type="button" className="ghost-button compact-button" onClick={onSignOut}>
-              Çıkış yap
+              Ã‡Ä±kÄ±ÅŸ yap
             </button>
           </div>
         </div>
@@ -2336,29 +2801,37 @@ function WorkspaceStep({
             <span className="status-dot"></span>
             <span>
               {analysisPending
-                ? 'Analiz sürüyor'
+                ? 'Analiz sÃ¼rÃ¼yor'
                 : analysisError
                   ? 'Tekrar denenmeli'
-                  : 'Hazır'}
+                  : 'HazÄ±r'}
             </span>
           </div>
         </div>
 
-        <div className="chat-thread">
+        <div ref={chatThreadRef} className="chat-thread">
           {renderUserMessage()}
           {analysisPending || threadMessages.length === 0
             ? renderLiveThread()
             : threadMessages.map((message) => renderPersistedMessage(message))}
+          {pendingChatMessage ? renderPendingUserMessage(pendingChatMessage) : null}
+          {chatPending ? renderTypingIndicator() : null}
+          {chatError && !analysisPending
+            ? renderAssistantMessage(<p>{chatError}</p>, 'error-message')
+            : null}
           {analysisError && !analysisPending && threadMessages.length > 0
             ? renderAssistantMessage(<p>{analysisError}</p>, 'error-message')
             : null}
+          {shouldShowTrialCta ? (
+            <div className="chat-thread-footer">{renderTrialCta()}</div>
+          ) : null}
         </div>
       </main>
 
       <aside className="insight-panel">
         <div className="insight-card knowledge-bank-card">
           <div className="side-section-heading">
-            <p className="mini-label">Marka Bilgi Bankası</p>
+            <p className="mini-label">Marka Bilgi BankasÄ±</p>
             <span>{memoryFiles.length || 0} dosya</span>
           </div>
           <div className="knowledge-list">
@@ -2378,7 +2851,7 @@ function WorkspaceStep({
                 </button>
               ))
             ) : (
-              <div className="knowledge-empty">Dosyalar oluşturuluyor...</div>
+              <div className="knowledge-empty">Dosyalar oluÅŸturuluyor...</div>
             )}
           </div>
           {memoryFiles.length > 2 ? (
@@ -2387,23 +2860,40 @@ function WorkspaceStep({
               className="knowledge-toggle"
               onClick={() => setShowAllKnowledgeFiles((current) => !current)}
             >
-              {showAllKnowledgeFiles ? 'Daralt' : 'Genişlet'}
+              {showAllKnowledgeFiles ? 'Daralt' : 'GeniÅŸlet'}
             </button>
           ) : null}
         </div>
       </aside>
 
       <div className="chat-input-bar">
-        <button type="button" className="chat-plus-button" aria-label="Yeni iş">
+        <button type="button" className="chat-plus-button" aria-label="Yeni iÅŸ">
           +
         </button>
         <input
           type="text"
-          value=""
-          readOnly
-          placeholder="Aylin'e mesaj yaz..."
+          value={chatDraft}
+          onChange={(event) => onChatDraftChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              onChatSubmit()
+            }
+          }}
+          disabled={analysisPending || chatPending || isChatLocked}
+          placeholder={
+            isChatLocked
+              ? `Bu oturum iÃ§in ${CHAT_MESSAGE_LIMIT} mesaj hakkÄ± doldu`
+              : `Aylin'e mesaj yaz... (${chatRemainingMessages}/${CHAT_MESSAGE_LIMIT})`
+          }
         />
-        <button type="button" className="chat-send-button" aria-label="Gönder">
+        <button
+          type="button"
+          className="chat-send-button"
+          aria-label="GÃ¶nder"
+          disabled={analysisPending || chatPending || isChatLocked || !chatDraft.trim()}
+          onClick={onChatSubmit}
+        >
           ^
         </button>
       </div>

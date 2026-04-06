@@ -1,8 +1,6 @@
-import aylinAvatar from './assets/avatars/aylin.svg'
-import canAvatar from './assets/avatars/can.svg'
-import zeynepAvatar from './assets/avatars/zeynep.svg'
-import mertAvatar from './assets/avatars/mert.svg'
 import type { Analysis, MemoryFile } from './types'
+
+const aylinAvatar = '/Aylin.png'
 
 export type Step =
   | 'specialist'
@@ -39,7 +37,7 @@ export const specialists: Specialist[] = [
   {
     id: 'aylin',
     name: 'Aylin',
-    role: 'Bütünleşik Dijital Pazarlamacı',
+    role: 'Bütünleşik dijital pazarlamacı',
     summary:
       'SEO, sosyal medya, reklam ve kampanya planlamasını tek bir büyüme sorumlusu gibi uçtan uca yönetir.',
     skills: ['SEO sistemi', 'Reklam kreatif döngüsü', 'İçerik ve sosyal medya operasyonu'],
@@ -49,32 +47,32 @@ export const specialists: Specialist[] = [
   {
     id: 'can',
     name: 'Can',
-    role: 'SEO ve İçerik Yöneticisi',
+    role: 'SEO ve içerik yöneticisi',
     summary:
       'Ticari niyet odaklı arama stratejisi, landing page fikri ve içerik planı oluşturur.',
     skills: ['Konu kümeleri', 'Rakip boşlukları', 'Dönüşüm odaklı metin'],
     available: false,
-    avatar: canAvatar,
+    avatar: aylinAvatar,
   },
   {
     id: 'zeynep',
     name: 'Zeynep',
-    role: 'E-posta ve Otomasyon Uzmanı',
+    role: 'E-posta ve otomasyon uzmanı',
     summary:
       'Geliri geri kazandıran ve mevcut müşteriyi sıcak tutan yaşam döngüsü akışları tasarlar.',
     skills: ['Akışlar ve tetikler', 'Sadakat kampanyaları', 'Teklif kurgusu'],
     available: false,
-    avatar: zeynepAvatar,
+    avatar: aylinAvatar,
   },
   {
     id: 'mert',
     name: 'Mert',
-    role: 'Performans Kreatif Stratejisti',
+    role: 'Performans kreatif stratejisti',
     summary:
       'Ürün içgörülerini reklam konseptlerine, kancalara ve test planlarına dönüştürür.',
     skills: ['Kreatif testleri', 'Ücretli medya briefleri', 'Kitle açıları'],
     available: false,
-    avatar: mertAvatar,
+    avatar: aylinAvatar,
   },
 ]
 
@@ -93,7 +91,7 @@ export const goalOptions: Goal[] = [
   },
   {
     id: 'content-writing',
-    label: 'İçerik Yazımı',
+    label: 'İçerik Yazarlığı',
     short: 'İY',
     blurb: 'Blog yazıları, kategori metinleri ve eğitici dönüşüm içerikleri üret.',
   },
@@ -130,7 +128,7 @@ export const platformOptions: Platform[] = [
   {
     id: 'shopify',
     name: 'Shopify veya Ticimax',
-    blurb: 'Katalog, merchandising ve ürün bazlı davranış verilerini taşır.',
+    blurb: 'Katalog, ürün yerleşimi ve ürün bazlı davranış verilerini taşır.',
   },
 ]
 
@@ -148,8 +146,8 @@ export const capabilityTags = [
 ]
 
 export const chatTasks = [
-  'İçeriğini çekiyorum',
-  'Önemli sayfaları ve teklif yapını tarıyorum',
+  'İçeriği topluyorum',
+  'Önemli sayfaları ve teklif yapısını tarıyorum',
   'Pazar ve fırsat sinyallerini yorumluyorum',
   'Çalışma dosyalarını kaydediyorum',
 ]
@@ -196,9 +194,8 @@ function humanizeName(value: string) {
 export function buildAnalysis(website: string, goals: string[], platforms: string[]) {
   const domain = readDomain(website) || 'yourbrand.com'
   const rootName = domain.split('.')[0] || 'yourbrand'
-  const companyName = humanizeName(rootName) || 'Markan'
-  const activeGoals =
-    goals.length > 0 ? goals : ['Sosyal Medya', 'SEO', 'İçerik Yazımı']
+  const companyName = humanizeName(rootName) || 'Markanız'
+  const activeGoals = goals.length > 0 ? goals : ['Sosyal Medya', 'SEO', 'İçerik Yazarlığı']
   const connectedText =
     platforms.length > 0
       ? ` ve ${platforms.join(', ')} bağlantılarından gelen ek sinyallerle`
@@ -208,6 +205,7 @@ export function buildAnalysis(website: string, goals: string[], platforms: strin
     companyName,
     domain,
     logoUrl: null,
+    brandAssets: null,
     sector: 'teklifini dijital kanallarda daha net anlatmak isteyen bir işletme',
     offer: 'ziyaretçiye net değer önerisi sunan bir ürün ya da hizmet yapısı',
     audience: 'güven, açıklık ve doğru yönlendirme bekleyen potansiyel müşteriler',
@@ -226,20 +224,20 @@ export function buildAnalysis(website: string, goals: string[], platforms: strin
       'Organik ve ücretli kanallar için kanıt odaklı kampanya açıları hazırla.',
       'Net deneyler ve haftalık çıktılarla bir aylık operasyon ritmi kur.',
     ],
-    palette: ['#12343B', '#2A9D8F', '#E9C46A', '#FAF7F2'],
+    palette: ['#191C1F', '#4DA3FF', '#E7FFDD', '#FFE3F3'],
   }
 }
 
 export function buildMemoryFiles(analysis: Analysis, website: string, goals: string[]) {
   const selectedGoals =
-    goals.length > 0 ? goals.join(', ') : 'SEO, İçerik Yazımı, Sosyal Medya'
+    goals.length > 0 ? goals.join(', ') : 'SEO, İçerik Yazarlığı, Sosyal Medya'
 
   const files: MemoryFile[] = [
     {
       id: 'business-profile',
-      filename: 'işletme-profili.md',
+      filename: 'isletme-profili.md',
       title: 'İşletme Profili',
-      blurb: "Teklif, hedef kitle, fiyat algısı ve Aylin'in ilk önceliği.",
+      blurb: 'Teklif, hedef kitle, fiyat algısı ve ilk önceliklerin özeti.',
       content: `# İşletme Profili
 
 ## Özet
@@ -251,19 +249,19 @@ export function buildMemoryFiles(analysis: Analysis, website: string, goals: str
 - Fiyat konumu: ${analysis.pricePosition}
 - İstenen destek: ${selectedGoals}
 
-## Aylin'in ilk yorumu
-${analysis.companyName}, değerini hızlı anlattığında ve net bir sonuca bağladığında daha güçlü görünüyor. Buradaki asıl fırsat sadece "daha fazla pazarlama" değil; markayı inandırıcı ve farklı kılan noktayı daha iyi paketlemek.
+## İlk değerlendirme
+${analysis.companyName}, değerini hızlı anlattığında ve net bir sonuca bağladığında daha güçlü görünüyor. Buradaki asıl fırsat yalnızca daha fazla pazarlama yapmak değil; markayı inandırıcı ve farklı kılan çizgiyi daha iyi paketlemek.
 
 ## Çalışma ilkesi
-Her kampanya şu soruya cevap vermeli:
-"Neden bu markaya şu anda güvenmeliyim?"
+Her kampanya şu soruya yanıt vermeli:
+"Neden bu markaya şimdi güvenmeliyim?"
 `,
     },
     {
       id: 'brand-guidelines',
-      filename: 'marka-kılavuzu.md',
+      filename: 'marka-kilavuzu.md',
       title: 'Marka Kılavuzu',
-      blurb: 'Ton, renk yönü, başlık kuralları ve korunacak marka davranışı.',
+      blurb: 'Ton, renk yönü, başlık kuralları ve korunacak iletişim çizgisi.',
       content: `# Marka Kılavuzu
 
 ## Ses ve ton
@@ -286,7 +284,7 @@ Her kampanya şu soruya cevap vermeli:
     },
     {
       id: 'market-research',
-      filename: 'pazar-araştırması.md',
+      filename: 'pazar-arastirmasi.md',
       title: 'Pazar Araştırması',
       blurb: 'Rakipler, arama ve mesaj boşlukları, en hızlı büyüme alanları.',
       content: `# Pazar Araştırması
@@ -302,7 +300,7 @@ Birçok rakip özellik ya da fiyat üzerinden yarışırken ${analysis.companyNa
 - Müşteri itirazlarını içerik temalarına ve reklam kancalarına çevir.
 - Aynı içgörüyü SEO, sosyal medya, reklam ve yaşam döngüsü mesajlarında tekrar kullan.
 
-## Aylin'in çalışma tezi
+## Çalışma tezi
 ${analysis.opportunity}
 `,
     },
@@ -310,7 +308,7 @@ ${analysis.opportunity}
       id: 'strategy',
       filename: 'strateji.md',
       title: '30 Günlük Strateji',
-      blurb: 'Onboarding sonrasında ilk ay uygulanacak öncelikler.',
+      blurb: 'İlk ay uygulanacak öncelikler ve operasyon ritmi.',
       content: `# Strateji
 
 ## İlk ay öncelikleri

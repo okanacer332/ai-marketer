@@ -1,7 +1,19 @@
+export type BrandAssets = {
+  brandLogo: string | null
+  favicon: string | null
+  touchIcon: string | null
+  socialImage: string | null
+  manifestUrl: string | null
+  maskIcon: string | null
+  tileImage: string | null
+  candidates: string[]
+}
+
 export type Analysis = {
   companyName: string
   domain: string
   logoUrl: string | null
+  brandAssets: BrandAssets | null
   sector: string
   offer: string
   audience: string
@@ -64,6 +76,7 @@ export type CrawlPage = {
   logoCandidates: string[]
   technologies: string[]
   currencies: string[]
+  zones: Record<string, string[]>
   meta: Record<string, string>
 }
 
@@ -90,6 +103,7 @@ export type ContactSignals = {
 export type ResearchPackage = {
   companyNameCandidates: string[]
   heroMessages: string[]
+  semanticZones: Record<string, string[]>
   positioningSignals: string[]
   offerSignals: string[]
   serviceOffers: string[]
@@ -104,6 +118,18 @@ export type ResearchPackage = {
   languageSignals: string[]
   marketSignals: string[]
   visualSignals: string[]
+  coreValueProps: string[]
+  supportingBenefits: string[]
+  proofClaims: string[]
+  audienceClaims: string[]
+  ctaClaims: string[]
+  evidenceBlocks: Array<{
+    type: string
+    claim: string
+    why: string
+    confidence: number
+    evidenceUrls: string[]
+  }>
 }
 
 export type StrategicSummary = {
@@ -190,6 +216,12 @@ export type ChatThread = {
   title: string
   status: string
   messages: ChatMessage[]
+}
+
+export type ChatMessageResponse = {
+  chatThread: ChatThread
+  remainingUserMessages: number
+  maxUserMessages: number
 }
 
 export type AnalyzeResponse = {

@@ -12,10 +12,24 @@ class AnalyzeRequest(BaseModel):
     )
 
 
+class BrandAssetsResponseModel(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    brand_logo: str | None = Field(default=None, alias="brandLogo")
+    favicon: str | None = None
+    touch_icon: str | None = Field(default=None, alias="touchIcon")
+    social_image: str | None = Field(default=None, alias="socialImage")
+    manifest_url: str | None = Field(default=None, alias="manifestUrl")
+    mask_icon: str | None = Field(default=None, alias="maskIcon")
+    tile_image: str | None = Field(default=None, alias="tileImage")
+    candidates: list[str] = Field(default_factory=list)
+
+
 class AnalysisResponseModel(BaseModel):
     company_name: str = Field(alias="companyName")
     domain: str
     logo_url: str | None = Field(default=None, alias="logoUrl")
+    brand_assets: BrandAssetsResponseModel | None = Field(default=None, alias="brandAssets")
     sector: str
     offer: str
     audience: str
@@ -80,6 +94,7 @@ class CrawlPageResponseModel(BaseModel):
     logo_candidates: list[str] = Field(default_factory=list, alias="logoCandidates")
     technologies: list[str] = Field(default_factory=list)
     currencies: list[str] = Field(default_factory=list)
+    zones: dict[str, list[str]] = Field(default_factory=dict)
     meta: dict[str, str] = Field(default_factory=dict)
 
 
@@ -110,6 +125,7 @@ class ResearchPackageResponseModel(BaseModel):
 
     company_name_candidates: list[str] = Field(default_factory=list, alias="companyNameCandidates")
     hero_messages: list[str] = Field(default_factory=list, alias="heroMessages")
+    semantic_zones: dict[str, list[str]] = Field(default_factory=dict, alias="semanticZones")
     positioning_signals: list[str] = Field(default_factory=list, alias="positioningSignals")
     offer_signals: list[str] = Field(default_factory=list, alias="offerSignals")
     service_offers: list[str] = Field(default_factory=list, alias="serviceOffers")
@@ -124,6 +140,12 @@ class ResearchPackageResponseModel(BaseModel):
     language_signals: list[str] = Field(default_factory=list, alias="languageSignals")
     market_signals: list[str] = Field(default_factory=list, alias="marketSignals")
     visual_signals: list[str] = Field(default_factory=list, alias="visualSignals")
+    core_value_props: list[str] = Field(default_factory=list, alias="coreValueProps")
+    supporting_benefits: list[str] = Field(default_factory=list, alias="supportingBenefits")
+    proof_claims: list[str] = Field(default_factory=list, alias="proofClaims")
+    audience_claims: list[str] = Field(default_factory=list, alias="audienceClaims")
+    cta_claims: list[str] = Field(default_factory=list, alias="ctaClaims")
+    evidence_blocks: list[dict[str, object]] = Field(default_factory=list, alias="evidenceBlocks")
 
 
 class StrategicSummaryResponseModel(BaseModel):
@@ -269,6 +291,20 @@ class WorkspaceSnapshotModel(BaseModel):
 
 class WorkspaceSnapshotRequest(WorkspaceSnapshotModel):
     pass
+
+
+class ChatMessageRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    message: str
+
+
+class ChatMessageResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    chat_thread: ChatThreadResponseModel = Field(alias="chatThread")
+    remaining_user_messages: int = Field(alias="remainingUserMessages")
+    max_user_messages: int = Field(alias="maxUserMessages")
 
 
 class AuditEventResponseModel(BaseModel):

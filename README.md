@@ -14,14 +14,14 @@ Chat-first onboarding and autonomous marketing workspace for local e-commerce br
 
 ## Architecture
 
-The app now runs as a 3-service Docker stack:
+The app now runs in a hybrid development setup:
 
 - `frontend`
-  Vite development server exposed on `http://127.0.0.1:5173`
+  Local Vite development server exposed on `http://localhost:5173`
 - `backend`
-  FastAPI service exposed on `http://127.0.0.1:8000`
+  FastAPI service inside Docker exposed on `http://localhost:8000`
 - `mongodb`
-  MongoDB exposed on `mongodb://127.0.0.1:27017`
+  MongoDB inside Docker exposed on `mongodb://localhost:27017`
 
 Firebase continues to handle user authentication in the frontend. The backend stores workspace state and analysis history in MongoDB, keyed by Firebase user identity (`uid` + normalized email).
 
@@ -132,7 +132,10 @@ Quick shortcuts:
 What `calistir.bat` does:
 
 - validates Docker and required env files
-- builds and starts `frontend`, `backend`, and `mongodb`
+- installs frontend dependencies if `node_modules` is missing
+- removes old Docker frontend leftovers if they exist
+- builds and starts `backend` and `mongodb`
+- starts the Vite frontend locally on `http://localhost:5173`
 - waits for backend and frontend health
 - opens the app in your browser
 
@@ -151,6 +154,7 @@ What it does not reset:
 
 - Firebase accounts
 - browser tarafindaki Firebase session verisi
+- local Vite frontend process
 
 ## What the backend does
 

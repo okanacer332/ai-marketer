@@ -8,9 +8,10 @@ from pymongo import ASCENDING, DESCENDING
 from .database import get_database
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 CHAT_THREAD_COLLECTION_NAME = "chat_threads"
 CHAT_MESSAGE_COLLECTION_NAME = "chat_messages"
+CHAT_USER_MESSAGE_LIMIT = 10
 ANALYSIS_PROCESS_STEPS = [
     "İçeriğini çekiyorum",
     "Önemli sayfaları ve teklif yapını tarıyorum",
@@ -203,6 +204,80 @@ def get_messages_for_thread(thread_id: ObjectId, limit: int | None = None) -> li
     return list(cursor)
 
 
+def count_user_messages_for_thread(thread_id: ObjectId) -> int:
+    return get_chat_messages_collection().count_documents(
+        {
+            "threadId": thread_id,
+            "senderType": "user",
+            "messageType": "user_text",
+        }
+    )
+
+
+def append_chat_exchange(
+    *,
+    thread_document: dict[str, Any],
+    workspace_document: dict[str, Any],
+    user_document: dict[str, Any],
+    user_message: str,
+    assistant_message: str,
+    specialist_id: str,
+    related_analysis_run_id: ObjectId | None,
+    now,
+) -> list[dict[str, Any]]:
+    last_message = get_chat_messages_collection().find_one(
+        {"threadId": thread_document["_id"]},
+        sort=[("sequence", DESCENDING)],
+    )
+    next_sequence = int(last_message.get("sequence", 0)) + 1 if isinstance(last_message, dict) else 1
+    firebase_uid = get_non_empty_string(user_document.get("firebaseUid"))
+    user_sender_id = firebase_uid or str(user_document.get("_id", "user"))
+
+    documents = [
+        {
+            "schemaVersion": SCHEMA_VERSION,
+            "threadId": thread_document["_id"],
+            "workspaceId": workspace_document["_id"],
+            "senderType": "user",
+            "senderId": user_sender_id,
+            "messageType": "user_text",
+            "content": user_message,
+            "attachments": [],
+            "metadata": {},
+            "relatedAnalysisRunId": related_analysis_run_id,
+            "sequence": next_sequence,
+            "createdAt": now,
+        },
+        {
+            "schemaVersion": SCHEMA_VERSION,
+            "threadId": thread_document["_id"],
+            "workspaceId": workspace_document["_id"],
+            "senderType": "assistant",
+            "senderId": specialist_id,
+            "messageType": "assistant_text",
+            "content": assistant_message,
+            "attachments": [],
+            "metadata": {},
+            "relatedAnalysisRunId": related_analysis_run_id,
+            "sequence": next_sequence + 1,
+            "createdAt": now,
+        },
+    ]
+
+    get_chat_messages_collection().insert_many(documents, ordered=True)
+    get_chat_threads_collection().update_one(
+        {"_id": thread_document["_id"]},
+        {
+            "$set": {
+                "lastMessageAt": now,
+                "updatedAt": now,
+            }
+        },
+    )
+
+    return get_messages_for_thread(thread_document["_id"])
+
+
 def enrich_analysis_result_with_chat_thread(
     analysis_result: dict[str, Any] | None,
     thread_document: dict[str, Any] | None,
@@ -263,7 +338,6 @@ def build_chat_timeline_messages(
     cleaned_result = repair_value(analysis_result or {})
     analysis = cleaned_result.get("analysis", {}) if isinstance(cleaned_result, dict) else {}
     strategic_summary = cleaned_result.get("strategicSummary", {}) if isinstance(cleaned_result, dict) else {}
-    quality_review = cleaned_result.get("qualityReview", {}) if isinstance(cleaned_result, dict) else {}
 
     attachments = [serialize_memory_attachment(document) for document in memory_documents]
     first_drop_attachments = attachments[:2]
@@ -273,28 +347,43 @@ def build_chat_timeline_messages(
         for attachment in attachments
         if isinstance(attachment.get("filename"), str) and attachment.get("filename")
     )
+    positioning_text = shorten_text(
+        get_non_empty_string(strategic_summary.get("positioning")) or analysis.get("offer", ""),
+        200,
+    ).rstrip(" .")
+    audience_text = shorten_text(
+        get_non_empty_string(strategic_summary.get("bestFitAudience")) or analysis.get("audience", ""),
+        180,
+    ).rstrip(" .")
+    differentiation_text = shorten_text(
+        get_non_empty_string(strategic_summary.get("differentiation")) or "teklif yapısında saklı",
+        160,
+    ).rstrip(" .")
+    growth_text = shorten_text(
+        get_non_empty_string(strategic_summary.get("primaryGrowthLever")) or analysis.get("opportunity", ""),
+        220,
+    ).rstrip(" .")
+    content_angle_text = shorten_text(
+        get_non_empty_string(strategic_summary.get("contentAngle")) or "daha güçlü bir konu kümelenmesi",
+        180,
+    ).rstrip(" .")
 
     summary_message = (
-        f"İlk bakış güçlü. {analysis.get('companyName', 'Bu marka')}, "
-        f"{get_non_empty_string(strategic_summary.get('positioning')) or analysis.get('offer', 'belirgin bir değer önerisi')} "
-        f"etrafında konumlanıyor gibi görünüyor. "
-        f"En olası hedef kitle {get_non_empty_string(strategic_summary.get('bestFitAudience')) or analysis.get('audience', 'hedef kitle sinyalleri')} "
-        f"ve ayırıcı çizgi {get_non_empty_string(strategic_summary.get('differentiation')) or 'teklif yapısında saklı'}."
+        f"İlk tablo netleşti. {analysis.get('companyName', 'Bu marka')} için öne çıkan çerçeve şu: "
+        f"{positioning_text or 'belirgin bir değer önerisi'}. "
+        f"En olası hedef kitle {audience_text or 'henüz netleşmedi'} ve ayırıcı çizgi "
+        f"{differentiation_text or 'teklif yapısında saklı'}."
     )
     deep_dive_message = (
-        f"Şimdi biraz daha derine iniyorum. En güçlü kaldıraç şu anda "
-        f"{get_non_empty_string(strategic_summary.get('primaryGrowthLever')) or analysis.get('opportunity', 'büyüme fırsatı')} "
-        f"çizgisinde görünüyor. İçerik açısından ise "
-        f"{get_non_empty_string(strategic_summary.get('contentAngle')) or 'daha güçlü bir konu kümelenmesi'} öne çıkıyor."
+        f"Şimdi pazar ve büyüme tarafını netleştiriyorum. Şu an en güçlü büyüme alanı "
+        f"{growth_text or 'ana büyüme fırsatı'} tarafında görünüyor. "
+        f"İçerik açısından ise {content_angle_text or 'daha güçlü bir konu kümelenmesi'} öne çıkıyor."
     )
-    final_message = "Dosyaları kaydettim."
+    final_message = "Çalışma dosyalarını kaydettim."
     if inline_files:
         final_message = f"{final_message} {inline_files} hazır."
     if isinstance(analysis.get("opportunity"), str) and analysis.get("opportunity"):
-        final_message = f"{final_message} En dikkat çekici büyüme fırsatı şu: {analysis['opportunity']}"
-    quality_score = positive_int(quality_review.get("score"), 0)
-    if quality_score:
-        final_message = f"{final_message} Analiz kapsam puanı şu anda {quality_score}/100."
+        final_message = f"{final_message} Şu an en dikkat çeken fırsat: {shorten_text(analysis['opportunity'], 260)}"
 
     return [
         {
@@ -331,7 +420,7 @@ def build_chat_timeline_messages(
             "senderType": "assistant",
             "senderId": specialist_id,
             "messageType": "memory_files",
-            "content": "Önce işletme profili ve marka kılavuzunu oluşturmaya başlıyorum.",
+            "content": "Önce işletme profili ve marka kılavuzunu netleştiriyorum.",
             "attachments": first_drop_attachments,
             "metadata": {
                 "memoryCount": len(first_drop_attachments),
@@ -349,7 +438,7 @@ def build_chat_timeline_messages(
             "senderType": "assistant",
             "senderId": specialist_id,
             "messageType": "memory_files",
-            "content": "Şimdi pazar araştırması ve strateji dosyalarını netleştiriyorum.",
+            "content": "Şimdi pazar araştırması ve strateji dosyalarını tamamlıyorum.",
             "attachments": second_drop_attachments,
             "metadata": {
                 "memoryCount": len(second_drop_attachments),
@@ -469,6 +558,13 @@ def positive_int(value: Any, default: int) -> int:
 
 def get_non_empty_string(value: Any) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+def shorten_text(value: Any, max_length: int) -> str:
+    text = get_non_empty_string(value)
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1].rstrip(" ,.;:") + "…"
 
 
 def repair_value(value: Any) -> Any:

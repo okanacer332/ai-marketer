@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections import Counter, deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+import asyncio
 import json
 import os
+from pathlib import Path
 import re
 from typing import Any, Iterable
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -12,17 +14,26 @@ import httpx
 from scrapling import Selector
 from scrapling.core.shell import Convertor
 
+from .mongo_adaptive_storage import MongoAdaptiveStorageSystem
+
 try:
     from scrapling.fetchers import FetcherSession, AsyncDynamicSession, AsyncStealthySession
+    from scrapling.spiders import Spider as ScraplingSpider, Request as SpiderRequest
 
     SCRAPLING_FETCHERS_AVAILABLE = True
     SCRAPLING_FETCHERS_ERROR = ""
+    SCRAPLING_SPIDERS_AVAILABLE = True
+    SCRAPLING_SPIDERS_ERROR = ""
 except Exception as exc:  # pragma: no cover
     FetcherSession = None  # type: ignore[assignment]
     AsyncDynamicSession = None  # type: ignore[assignment]
     AsyncStealthySession = None  # type: ignore[assignment]
+    ScraplingSpider = None  # type: ignore[assignment]
+    SpiderRequest = None  # type: ignore[assignment]
     SCRAPLING_FETCHERS_AVAILABLE = False
     SCRAPLING_FETCHERS_ERROR = str(exc)
+    SCRAPLING_SPIDERS_AVAILABLE = False
+    SCRAPLING_SPIDERS_ERROR = str(exc)
 
 
 EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
@@ -185,7 +196,73 @@ GENERIC_TOPIC_TERMS = {
     "menu",
     "ürünlerimizi",
     "yazılım",
+    "selected",
+    "featured",
+    "overview",
+    "project",
+    "projects",
+    "insights",
+    "insight",
+    "read more",
+    "devamını oku",
+    "copyright",
+    "all rights reserved",
 }
+LOW_SIGNAL_PHRASES = (
+    "services projects blog contact",
+    "made with by",
+    "all rights reserved",
+    "copyright",
+    "devamını oku",
+    "read more",
+    "selected",
+    "built with the industry's most",
+)
+NAVIGATION_NOISE_TOKENS = {
+    "home",
+    "about",
+    "services",
+    "service",
+    "projects",
+    "project",
+    "blog",
+    "contact",
+    "menu",
+    "pricing",
+    "faq",
+    "login",
+    "signin",
+    "register",
+    "search",
+    "quote",
+    "en",
+    "tr",
+}
+TOPIC_HINT_TOKENS = (
+    "ai",
+    "seo",
+    "geo",
+    "aeo",
+    "automation",
+    "otomasyon",
+    "web",
+    "mobil",
+    "mobile",
+    "desktop",
+    "yazılım",
+    "uygulama",
+    "application",
+    "platform",
+    "erp",
+    "outsourcing",
+    "danışmanlık",
+    "learning",
+    "eğitim",
+    "muhasebe",
+    "designops",
+    "legacy",
+    "modernizasyon",
+)
 SERVICE_OFFER_HINTS = (
     "consulting",
     "danışmanlık",
@@ -310,6 +387,7 @@ class PageSnapshot:
     trust_signals: list[str] = field(default_factory=list)
     audience_signals: list[str] = field(default_factory=list)
     proof_points: list[str] = field(default_factory=list)
+    zones: dict[str, list[str]] = field(default_factory=dict)
     meta: dict[str, str] = field(default_factory=dict)
 
 
@@ -322,6 +400,27 @@ class ContactSignals:
 
 
 @dataclass
+class BrandAssets:
+    brand_logo: str = ""
+    favicon: str = ""
+    touch_icon: str = ""
+    social_image: str = ""
+    manifest_url: str = ""
+    mask_icon: str = ""
+    tile_image: str = ""
+    candidates: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AssetCandidate:
+    url: str
+    asset_type: str
+    source: str
+    page_type: str = "general"
+    page_url: str = ""
+
+
+@dataclass
 class SiteSignals:
     technologies: list[str]
     currencies: list[str]
@@ -330,6 +429,7 @@ class SiteSignals:
     entity_labels: list[str]
     page_mix: list[str]
     pricing_signals: list[str]
+    brand_assets: BrandAssets = field(default_factory=BrandAssets)
     logo_url: str = ""
 
 
@@ -351,6 +451,7 @@ class CrawlMeta:
 class ResearchPackage:
     company_name_candidates: list[str]
     hero_messages: list[str]
+    semantic_zones: dict[str, list[str]]
     positioning_signals: list[str]
     offer_signals: list[str]
     service_offers: list[str]
@@ -365,6 +466,12 @@ class ResearchPackage:
     language_signals: list[str]
     market_signals: list[str]
     visual_signals: list[str]
+    core_value_props: list[str]
+    supporting_benefits: list[str]
+    proof_claims: list[str]
+    audience_claims: list[str]
+    cta_claims: list[str]
+    evidence_blocks: list[dict[str, Any]]
 
 
 @dataclass
@@ -401,11 +508,181 @@ def normalize_url(url: str) -> str:
     return urlunparse(cleaned)
 
 
+def build_selector_config_for_domain(domain: str) -> dict[str, Any]:
+    return {
+        **SCRAPE_SELECTOR_CONFIG,
+        "adaptive": True,
+        "adaptive_domain": domain,
+        "storage": MongoAdaptiveStorageSystem,
+        "storage_args": {
+            "url": domain,
+        },
+    }
+
+
+class WebsiteAnalysisSpider(ScraplingSpider if ScraplingSpider is not None else object):  # type: ignore[misc]
+    name = "website-analysis"
+    concurrent_requests = 6
+    concurrent_requests_per_domain = 4
+    download_delay = 0.15
+    max_blocked_retries = 2
+
+    def __init__(
+        self,
+        *,
+        website: str,
+        domain: str,
+        start_urls: list[str],
+        max_pages: int,
+        max_depth: int,
+        selector_config: dict[str, Any],
+        crawldir: Path,
+    ):
+        self.name = f"website-analysis-{domain.replace('.', '-')}"
+        self.start_urls = start_urls
+        self.allowed_domains = {domain, f"www.{domain}"}
+        self.website = website
+        self.domain = domain
+        self.max_pages = max_pages
+        self.max_depth = max_depth
+        self.selector_config = selector_config
+        self._emitted_pages: set[str] = set()
+        super().__init__(crawldir=crawldir, interval=60.0)
+
+    def configure_sessions(self, manager) -> None:  # type: ignore[override]
+        manager.add(
+            "fast",
+            FetcherSession(
+                impersonate=["chrome", "firefox", "safari"],
+                stealthy_headers=True,
+                timeout=20,
+                retries=2,
+                retry_delay=1,
+                follow_redirects=True,
+                verify=should_verify_ssl(),
+                headers={"Accept-Language": DEFAULT_ACCEPT_LANGUAGE},
+                selector_config=self.selector_config,
+            ),
+            default=True,
+        )
+        manager.add(
+            "dynamic",
+            AsyncDynamicSession(
+                headless=True,
+                timeout=30000,
+                wait_selector="body",
+                network_idle=True,
+                google_search=True,
+                extra_headers={"Accept-Language": DEFAULT_ACCEPT_LANGUAGE},
+                blocked_domains=TRACKER_BLOCKLIST,
+                selector_config=self.selector_config,
+            ),
+            lazy=True,
+        )
+        manager.add(
+            "stealth",
+            AsyncStealthySession(
+                headless=True,
+                timeout=45000,
+                wait_selector="body",
+                network_idle=True,
+                google_search=True,
+                block_webrtc=True,
+                hide_canvas=True,
+                solve_cloudflare=True,
+                extra_headers={"Accept-Language": DEFAULT_ACCEPT_LANGUAGE},
+                blocked_domains=TRACKER_BLOCKLIST,
+                selector_config=self.selector_config,
+            ),
+            lazy=True,
+        )
+
+    async def start_requests(self):
+        for index, url in enumerate(self.start_urls):
+            yield SpiderRequest(
+                url,
+                sid="fast",
+                callback=self.parse,
+                priority=max(0, len(self.start_urls) - index),
+                meta={"depth": 0},
+            )
+
+    async def is_blocked(self, response):  # type: ignore[override]
+        return is_blocked_response(response)
+
+    async def retry_blocked_request(self, request, response):  # type: ignore[override]
+        retry_request = request.copy()
+        if request.sid == "fast":
+            retry_request.sid = "dynamic"
+        else:
+            retry_request.sid = "stealth"
+        return retry_request
+
+    async def parse(self, response):
+        if len(self._emitted_pages) >= self.max_pages:
+            self.pause()
+            return
+
+        fetch_mode = map_spider_session_to_fetch_mode(getattr(getattr(response, "request", None), "sid", "fast"))
+        page = parse_page(response, fetch_mode=fetch_mode, status_code=getattr(response, "status", 200))
+        normalized_url = canonicalize_url(page.url)
+
+        if normalized_url in self._emitted_pages:
+            return
+
+        self._emitted_pages.add(normalized_url)
+        yield {"kind": "page", "page": serialize_page_snapshot(page)}
+
+        if len(self._emitted_pages) >= self.max_pages:
+            self.pause()
+            return
+
+        depth = int((getattr(response, "meta", {}) or {}).get("depth", 0))
+        if depth >= self.max_depth:
+            return
+
+        for index, candidate in enumerate(prioritize_links(page.links, self.domain, page.page_type)):
+            yield response.follow(
+                candidate,
+                sid=choose_spider_session_id(candidate, page),
+                callback=self.parse,
+                priority=max(1, 12 - index),
+                meta={"depth": depth + 1},
+            )
+
+
 async def crawl_website(url: str, max_pages: int = 12, max_depth: int = 2) -> CrawlBundle:
     website = normalize_url(url)
     domain = urlparse(website).netloc.replace("www.", "")
 
     if SCRAPLING_FETCHERS_AVAILABLE and FetcherSession is not None:
+        if (
+            os.getenv("SCRAPLING_ENABLE_SPIDER", "false").lower() in {"1", "true", "yes"}
+            and SCRAPLING_SPIDERS_AVAILABLE
+            and ScraplingSpider is not None
+            and SpiderRequest is not None
+        ):
+            try:
+                return await crawl_with_scrapling_spider(
+                    website,
+                    domain,
+                    max_pages=max_pages,
+                    max_depth=max_depth,
+                )
+            except Exception as exc:
+                fallback_bundle = await crawl_with_scrapling(
+                    website,
+                    domain,
+                    max_pages=max_pages,
+                    max_depth=max_depth,
+                )
+                fallback_bundle.notes.insert(
+                    0,
+                    f"WARN: Scrapling Spider akışı başarısız oldu, fetcher kuyruğu ile devam edildi. Neden: {exc}",
+                )
+                fallback_bundle.notes = standardize_crawl_notes(fallback_bundle.notes)
+                fallback_bundle.crawl_meta.notes = fallback_bundle.notes
+                return fallback_bundle
         return await crawl_with_scrapling(website, domain, max_pages=max_pages, max_depth=max_depth)
 
     fallback_note = "INFO: Scrapling fetcher katmanı kullanılamadı, selector tabanlı yedek akış kullanıldı."
@@ -419,12 +696,84 @@ async def crawl_website(url: str, max_pages: int = 12, max_depth: int = 2) -> Cr
     return bundle
 
 
+async def crawl_with_scrapling_spider(website: str, domain: str, max_pages: int, max_depth: int) -> CrawlBundle:
+    selector_config = build_selector_config_for_domain(domain)
+
+    seed_session = FetcherSession(  # type: ignore[operator]
+        impersonate=["chrome", "firefox", "safari"],
+        stealthy_headers=True,
+        timeout=20,
+        retries=2,
+        retry_delay=1,
+        follow_redirects=True,
+        verify=should_verify_ssl(),
+        headers={"Accept-Language": DEFAULT_ACCEPT_LANGUAGE},
+        selector_config=selector_config,
+    )
+
+    async with seed_session as static_session:
+        sitemap_urls = await discover_sitemap_urls_scrapling(static_session, website, domain)
+
+    start_urls = unique_ordered([website, *sitemap_urls[: max_pages * 4]])[: max_pages * 5]
+    crawldir = Path(__file__).resolve().parents[2] / "data" / "spider_checkpoints" / domain.replace(".", "_")
+    crawldir.mkdir(parents=True, exist_ok=True)
+
+    spider = WebsiteAnalysisSpider(
+        website=website,
+        domain=domain,
+        start_urls=start_urls,
+        max_pages=max_pages,
+        max_depth=max_depth,
+        selector_config=selector_config,
+        crawldir=crawldir,
+    )
+
+    notes: list[str] = ["INFO: Scrapling Spider akışı etkin."]
+    result = await asyncio.to_thread(spider.start)
+    pages = [
+        deserialize_page_snapshot(item.get("page", {}))
+        for item in result.items
+        if isinstance(item, dict) and item.get("kind") == "page" and isinstance(item.get("page"), dict)
+    ][:max_pages]
+    spider_stats = result.stats.to_dict()
+
+    if not pages:
+        raise ValueError("Scrapling Spider okunabilir HTML sayfası üretemedi.")
+
+    notes.append(
+        "INFO: Spider istatistikleri -> istek: {requests}, bloklu: {blocked}, başarısız: {failed}.".format(
+            requests=int(spider_stats.get("requests_count", len(pages))),
+            blocked=int(spider_stats.get("blocked_requests_count", 0)),
+            failed=int(spider_stats.get("failed_requests_count", 0)),
+        )
+    )
+
+    brand_assets, asset_notes = await discover_brand_assets(website, pages)
+    notes.extend(asset_notes)
+
+    return build_bundle(
+        website,
+        domain,
+        pages,
+        notes,
+        fetch_strategy="scrapling-spider",
+        page_limit=max_pages,
+        depth_limit=max_depth,
+        pages_visited=max(int(spider_stats.get("requests_count", len(pages))), len(pages)),
+        pages_failed=int(spider_stats.get("failed_requests_count", 0)),
+        sitemap_urls=sitemap_urls,
+        brand_assets=brand_assets,
+    )
+
+
 async def crawl_with_scrapling(website: str, domain: str, max_pages: int, max_depth: int) -> CrawlBundle:
     visited: set[str] = set()
     queue: deque[tuple[str, int]] = deque([(website, 0)])
     pages: list[PageSnapshot] = []
     notes: list[str] = []
     failures = 0
+
+    selector_config = build_selector_config_for_domain(domain)
 
     static_session_manager = FetcherSession(  # type: ignore[operator]
         impersonate=["chrome", "firefox", "safari"],
@@ -435,7 +784,7 @@ async def crawl_with_scrapling(website: str, domain: str, max_pages: int, max_de
         follow_redirects=True,
         verify=should_verify_ssl(),
         headers={"Accept-Language": DEFAULT_ACCEPT_LANGUAGE},
-        selector_config=SCRAPE_SELECTOR_CONFIG,
+        selector_config=selector_config,
     )
 
     async with static_session_manager as static_session:
@@ -453,7 +802,11 @@ async def crawl_with_scrapling(website: str, domain: str, max_pages: int, max_de
             visited.add(normalized)
 
             try:
-                response, fetch_mode, fetch_notes = await fetch_with_best_effort(static_session, current_url)
+                response, fetch_mode, fetch_notes = await fetch_with_best_effort(
+                    static_session,
+                    current_url,
+                    selector_config=selector_config,
+                )
             except Exception as exc:
                 failures += 1
                 notes.append(f"ERROR: {current_url} taranamadı: {exc}")
@@ -478,6 +831,9 @@ async def crawl_with_scrapling(website: str, domain: str, max_pages: int, max_de
     if not pages:
         raise ValueError("Verilen adresten okunabilir HTML sayfası çekilemedi.")
 
+    brand_assets, asset_notes = await discover_brand_assets(website, pages)
+    notes.extend(asset_notes)
+
     return build_bundle(
         website,
         domain,
@@ -489,6 +845,7 @@ async def crawl_with_scrapling(website: str, domain: str, max_pages: int, max_de
         pages_visited=len(visited),
         pages_failed=failures,
         sitemap_urls=sitemap_urls,
+        brand_assets=brand_assets,
     )
 
 
@@ -535,7 +892,15 @@ async def crawl_with_httpx_fallback(website: str, domain: str, max_pages: int, m
             if not looks_like_html_httpx(response):
                 continue
 
-            selector = Selector(response.text, url=str(response.url))
+            selector = Selector(
+                response.text,
+                url=str(response.url),
+                adaptive=True,
+                storage=MongoAdaptiveStorageSystem,
+                storage_args={
+                    "url": domain,
+                },
+            )
             page = parse_page(selector, fetch_mode="httpx-selector", status_code=response.status_code)
             pages.append(page)
 
@@ -550,6 +915,9 @@ async def crawl_with_httpx_fallback(website: str, domain: str, max_pages: int, m
     if not pages:
         raise ValueError("Verilen adresten okunabilir HTML sayfası çekilemedi.")
 
+    brand_assets, asset_notes = await discover_brand_assets(website, pages)
+    notes.extend(asset_notes)
+
     return build_bundle(
         website,
         domain,
@@ -561,10 +929,16 @@ async def crawl_with_httpx_fallback(website: str, domain: str, max_pages: int, m
         pages_visited=len(visited),
         pages_failed=failures,
         sitemap_urls=sitemap_urls,
+        brand_assets=brand_assets,
     )
 
 
-async def fetch_with_best_effort(static_session: Any, url: str) -> tuple[Any, str, list[str]]:
+async def fetch_with_best_effort(
+    static_session: Any,
+    url: str,
+    *,
+    selector_config: dict[str, Any],
+) -> tuple[Any, str, list[str]]:
     notes: list[str] = []
     static_response = await static_session.get(url)
     best_response = static_response
@@ -572,24 +946,24 @@ async def fetch_with_best_effort(static_session: Any, url: str) -> tuple[Any, st
 
     if is_blocked_response(static_response):
         notes.append(f"{url} için korumalı yanıt algılandı, tarayıcı katmanına yükseltildi.")
-        dynamic_response = await try_dynamic_fetch(url)
+        dynamic_response = await try_dynamic_fetch(url, selector_config=selector_config)
         if dynamic_response is not None:
             return dynamic_response, "dynamic", notes
 
-        stealth_response = await try_stealth_fetch(url)
+        stealth_response = await try_stealth_fetch(url, selector_config=selector_config)
         if stealth_response is not None:
             return stealth_response, "stealth", notes
 
         return best_response, best_mode, notes
 
     if needs_browser_render(static_response):
-        dynamic_response = await try_dynamic_fetch(url)
+        dynamic_response = await try_dynamic_fetch(url, selector_config=selector_config)
         if dynamic_response is not None and response_quality_score(dynamic_response) > response_quality_score(static_response):
             notes.append(f"{url} için dinamik render daha zengin içerik döndürdü.")
             best_response = dynamic_response
             best_mode = "dynamic"
         else:
-            stealth_response = await try_stealth_fetch(url)
+            stealth_response = await try_stealth_fetch(url, selector_config=selector_config)
             if stealth_response is not None and response_quality_score(stealth_response) > response_quality_score(best_response):
                 notes.append(f"{url} için stealth render daha zengin içerik döndürdü.")
                 best_response = stealth_response
@@ -598,7 +972,7 @@ async def fetch_with_best_effort(static_session: Any, url: str) -> tuple[Any, st
     return best_response, best_mode, notes
 
 
-async def try_dynamic_fetch(url: str) -> Any | None:
+async def try_dynamic_fetch(url: str, *, selector_config: dict[str, Any]) -> Any | None:
     if AsyncDynamicSession is None:
         return None
 
@@ -611,14 +985,14 @@ async def try_dynamic_fetch(url: str) -> Any | None:
             google_search=True,
             extra_headers={"Accept-Language": DEFAULT_ACCEPT_LANGUAGE},
             blocked_domains=TRACKER_BLOCKLIST,
-            selector_config=SCRAPE_SELECTOR_CONFIG,
+            selector_config=selector_config,
         ) as session:
             return await session.fetch(url)
     except Exception:
         return None
 
 
-async def try_stealth_fetch(url: str) -> Any | None:
+async def try_stealth_fetch(url: str, *, selector_config: dict[str, Any]) -> Any | None:
     if AsyncStealthySession is None:
         return None
 
@@ -634,7 +1008,7 @@ async def try_stealth_fetch(url: str) -> Any | None:
             solve_cloudflare=True,
             extra_headers={"Accept-Language": DEFAULT_ACCEPT_LANGUAGE},
             blocked_domains=TRACKER_BLOCKLIST,
-            selector_config=SCRAPE_SELECTOR_CONFIG,
+            selector_config=selector_config,
         ) as session:
             return await session.fetch(url)
     except Exception:
@@ -692,6 +1066,358 @@ async def discover_sitemap_urls_httpx(client: httpx.AsyncClient, website: str, d
     return unique_ordered(discovered)
 
 
+def choose_spider_session_id(url: str, page: PageSnapshot) -> str:
+    path = urlparse(url).path.lower()
+    if any(token in path for token in ("login", "signin", "register", "account", "checkout")):
+        return "stealth"
+    if page.fetch_mode in {"dynamic", "stealth"}:
+        return page.fetch_mode
+    if any(token in path for token in ("analysis", "tool", "contact", "faq", "pricing", "demo", "app")):
+        return "dynamic"
+    return "fast"
+
+
+def map_spider_session_to_fetch_mode(session_id: str) -> str:
+    if session_id == "dynamic":
+        return "dynamic"
+    if session_id == "stealth":
+        return "stealth"
+    return "static"
+
+
+def serialize_page_snapshot(page: PageSnapshot) -> dict[str, Any]:
+    return asdict(page)
+
+
+def deserialize_page_snapshot(payload: dict[str, Any]) -> PageSnapshot:
+    faq_items = [
+        FaqItem(
+            question=clean_text(str(item.get("question", ""))),
+            answer=clean_text(str(item.get("answer", ""))),
+        )
+        for item in payload.get("faq_items", [])
+        if isinstance(item, dict)
+    ]
+    forms = [
+        FormSnapshot(
+            action=clean_text(str(item.get("action", ""))),
+            method=clean_text(str(item.get("method", ""))) or "GET",
+            fields=[clean_text(str(field)) for field in item.get("fields", []) if clean_text(str(field))],
+        )
+        for item in payload.get("forms", [])
+        if isinstance(item, dict)
+    ]
+    return PageSnapshot(
+        url=clean_text(str(payload.get("url", ""))),
+        title=clean_text(str(payload.get("title", ""))),
+        description=clean_text(str(payload.get("description", ""))),
+        headings=[clean_text(str(value)) for value in payload.get("headings", []) if clean_text(str(value))],
+        excerpt=clean_text(str(payload.get("excerpt", ""))),
+        raw_text=clean_text(str(payload.get("raw_text", ""))),
+        links=[clean_text(str(value)) for value in payload.get("links", []) if clean_text(str(value))],
+        structured_data=[clean_text(str(value)) for value in payload.get("structured_data", []) if clean_text(str(value))],
+        page_type=clean_text(str(payload.get("page_type", ""))) or "general",
+        fetch_mode=clean_text(str(payload.get("fetch_mode", ""))) or "static",
+        status_code=int(payload.get("status_code", 200) or 200),
+        main_content=clean_text(str(payload.get("main_content", ""))),
+        cta_texts=[clean_text(str(value)) for value in payload.get("cta_texts", []) if clean_text(str(value))],
+        value_props=[clean_text(str(value)) for value in payload.get("value_props", []) if clean_text(str(value))],
+        nav_labels=[clean_text(str(value)) for value in payload.get("nav_labels", []) if clean_text(str(value))],
+        pricing_signals=[clean_text(str(value)) for value in payload.get("pricing_signals", []) if clean_text(str(value))],
+        faq_items=faq_items,
+        forms=forms,
+        entity_labels=[clean_text(str(value)) for value in payload.get("entity_labels", []) if clean_text(str(value))],
+        image_alts=[clean_text(str(value)) for value in payload.get("image_alts", []) if clean_text(str(value))],
+        logo_candidates=[clean_text(str(value)) for value in payload.get("logo_candidates", []) if clean_text(str(value))],
+        technologies=[clean_text(str(value)) for value in payload.get("technologies", []) if clean_text(str(value))],
+        currencies=[clean_text(str(value)) for value in payload.get("currencies", []) if clean_text(str(value))],
+        hero_messages=[clean_text(str(value)) for value in payload.get("hero_messages", []) if clean_text(str(value))],
+        trust_signals=[clean_text(str(value)) for value in payload.get("trust_signals", []) if clean_text(str(value))],
+        audience_signals=[clean_text(str(value)) for value in payload.get("audience_signals", []) if clean_text(str(value))],
+        proof_points=[clean_text(str(value)) for value in payload.get("proof_points", []) if clean_text(str(value))],
+        zones={
+            key: [clean_text(str(value)) for value in values if clean_text(str(value))]
+            for key, values in payload.get("zones", {}).items()
+            if isinstance(values, list)
+        }
+        if isinstance(payload.get("zones"), dict)
+        else {},
+        meta={
+            str(key): clean_text(str(value))
+            for key, value in payload.get("meta", {}).items()
+            if clean_text(str(value))
+        }
+        if isinstance(payload.get("meta"), dict)
+        else {},
+    )
+
+
+async def discover_brand_assets(website: str, pages: list[PageSnapshot]) -> tuple[BrandAssets, list[str]]:
+    notes: list[str] = []
+    asset_candidates = collect_asset_candidates(website, pages)
+    manifest_url = choose_manifest_url(pages)
+
+    if manifest_url:
+        manifest_candidates, manifest_notes = await fetch_manifest_asset_candidates(manifest_url)
+        asset_candidates.extend(manifest_candidates)
+        notes.extend(manifest_notes)
+
+    brand_assets = build_brand_assets(website, asset_candidates, manifest_url)
+
+    if brand_assets.brand_logo:
+        notes.append(f"INFO: Marka logosu tespit edildi: {brand_assets.brand_logo}")
+    elif brand_assets.favicon:
+        notes.append(f"INFO: Doğrudan logo bulunamadı, favicon kullanıma hazır: {brand_assets.favicon}")
+    else:
+        notes.append("WARN: Marka logosu veya favicon güvenilir şekilde ayrıştırılamadı.")
+
+    return brand_assets, unique_ordered(notes)
+
+
+def collect_asset_candidates(website: str, pages: list[PageSnapshot]) -> list[AssetCandidate]:
+    candidates: list[AssetCandidate] = []
+
+    def add_candidate(
+        page: PageSnapshot,
+        raw_value: str,
+        asset_type: str,
+        source: str,
+    ) -> None:
+        resolved = resolve_asset_url(page.url, raw_value)
+        if not resolved:
+            return
+        candidates.append(
+            AssetCandidate(
+                url=resolved,
+                asset_type=asset_type,
+                source=source,
+                page_type=page.page_type,
+                page_url=page.url,
+            )
+        )
+
+    for page in pages:
+        add_candidate(page, page.meta.get("icon", ""), "favicon", "meta_icon")
+        add_candidate(page, page.meta.get("shortcutIcon", ""), "favicon", "meta_shortcut_icon")
+        add_candidate(page, page.meta.get("appleTouchIcon", ""), "touch_icon", "meta_apple_touch_icon")
+        add_candidate(
+            page,
+            page.meta.get("appleTouchIconPrecomposed", ""),
+            "touch_icon",
+            "meta_apple_touch_precomposed",
+        )
+        add_candidate(page, page.meta.get("maskIcon", ""), "mask_icon", "meta_mask_icon")
+        add_candidate(page, page.meta.get("msTileImage", ""), "tile_image", "meta_ms_tile_image")
+        add_candidate(page, page.meta.get("ogImage", ""), "social_image", "meta_og_image")
+        add_candidate(page, page.meta.get("twitterImage", ""), "social_image", "meta_twitter_image")
+
+        for candidate in page.logo_candidates:
+            add_candidate(page, candidate, "brand_logo", "dom_logo")
+
+    favicon_fallback = resolve_asset_url(website, "/favicon.ico")
+    if favicon_fallback:
+        candidates.append(
+            AssetCandidate(
+                url=favicon_fallback,
+                asset_type="favicon",
+                source="root_favicon",
+                page_type="home",
+                page_url=website,
+            )
+        )
+
+    return dedupe_asset_candidates(candidates)
+
+
+def dedupe_asset_candidates(candidates: list[AssetCandidate]) -> list[AssetCandidate]:
+    deduped: dict[tuple[str, str, str], AssetCandidate] = {}
+    for candidate in candidates:
+        key = (
+            canonicalize_url(candidate.url),
+            candidate.asset_type,
+            candidate.source,
+        )
+        deduped[key] = candidate
+    return list(deduped.values())
+
+
+def choose_manifest_url(pages: list[PageSnapshot]) -> str:
+    manifest_candidates: list[str] = []
+    for page in pages:
+        manifest_value = page.meta.get("manifest", "")
+        resolved = resolve_asset_url(page.url, manifest_value)
+        if resolved:
+            manifest_candidates.append(resolved)
+    unique_candidates = unique_ordered(manifest_candidates)
+    return unique_candidates[0] if unique_candidates else ""
+
+
+async def fetch_manifest_asset_candidates(manifest_url: str) -> tuple[list[AssetCandidate], list[str]]:
+    notes: list[str] = []
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=8.0,
+            verify=should_verify_ssl(),
+            headers={"Accept-Language": DEFAULT_ACCEPT_LANGUAGE},
+        ) as client:
+            response = await client.get(manifest_url)
+            response.raise_for_status()
+    except Exception as exc:
+        return [], [f"INFO: Web manifest okunamadı: {exc}"]
+
+    try:
+        manifest_data = response.json()
+    except Exception as exc:
+        return [], [f"INFO: Web manifest çözümlenemedi: {exc}"]
+
+    if not isinstance(manifest_data, dict):
+        return [], []
+
+    candidates: list[AssetCandidate] = []
+    for item in manifest_data.get("icons", []):
+        if not isinstance(item, dict):
+            continue
+
+        src = clean_text(str(item.get("src", "")))
+        resolved = resolve_asset_url(manifest_url, src)
+        if not resolved:
+            continue
+
+        purpose = clean_text(str(item.get("purpose", ""))).lower()
+        sizes = clean_text(str(item.get("sizes", ""))).lower()
+        asset_type = "favicon"
+        if "maskable" in purpose or "monochrome" in purpose:
+            asset_type = "touch_icon"
+        elif any(size in sizes for size in ("512x512", "256x256", "192x192", "180x180")):
+            asset_type = "touch_icon"
+
+        candidates.append(
+            AssetCandidate(
+                url=resolved,
+                asset_type=asset_type,
+                source="manifest_icon",
+                page_type="home",
+                page_url=manifest_url,
+            )
+        )
+
+    if candidates:
+        notes.append("INFO: Web manifest içindeki ikon seti işlendi.")
+
+    return dedupe_asset_candidates(candidates), notes
+
+
+def build_brand_assets(
+    website: str,
+    candidates: list[AssetCandidate],
+    manifest_url: str = "",
+) -> BrandAssets:
+    brand_logo = choose_best_asset_url(candidates, "brand_logo")
+    favicon = choose_best_asset_url(candidates, "favicon")
+    touch_icon = choose_best_asset_url(candidates, "touch_icon")
+    social_image = choose_best_asset_url(candidates, "social_image")
+    mask_icon = choose_best_asset_url(candidates, "mask_icon")
+    tile_image = choose_best_asset_url(candidates, "tile_image")
+
+    if not brand_logo:
+        brand_logo = favicon or touch_icon or social_image
+
+    ordered_candidates = sorted(
+        candidates,
+        key=lambda item: score_asset_candidate(item, item.asset_type),
+        reverse=True,
+    )
+
+    return BrandAssets(
+        brand_logo=brand_logo,
+        favicon=favicon,
+        touch_icon=touch_icon,
+        social_image=social_image,
+        manifest_url=manifest_url,
+        mask_icon=mask_icon,
+        tile_image=tile_image,
+        candidates=unique_ordered([item.url for item in ordered_candidates])[:16],
+    )
+
+
+def choose_brand_assets(pages: list[PageSnapshot]) -> BrandAssets:
+    return build_brand_assets(pages[0].url if pages else "", collect_asset_candidates(pages[0].url if pages else "", pages))
+
+
+def choose_best_asset_url(candidates: list[AssetCandidate], target_type: str) -> str:
+    if not candidates:
+        return ""
+
+    scored: dict[str, tuple[int, AssetCandidate]] = {}
+    for candidate in candidates:
+        score = score_asset_candidate(candidate, target_type)
+        existing = scored.get(candidate.url)
+        if existing is None or score > existing[0]:
+            scored[candidate.url] = (score, candidate)
+
+    if not scored:
+        return ""
+
+    best_score, best_candidate = max(scored.values(), key=lambda item: item[0])
+    if best_score <= 0:
+        return ""
+    return best_candidate.url
+
+
+def score_asset_candidate(candidate: AssetCandidate, target_type: str) -> int:
+    lower_url = candidate.url.lower()
+    lower_source = candidate.source.lower()
+    score = 0
+
+    if candidate.asset_type == target_type:
+        score += 40
+    elif target_type == "brand_logo" and candidate.asset_type in {"favicon", "touch_icon"}:
+        score += 12
+    elif target_type == "favicon" and candidate.asset_type == "touch_icon":
+        score += 10
+
+    if candidate.page_type in {"home", "about", "general"}:
+        score += 10
+
+    if lower_source == "dom_logo":
+        score += 28
+    elif lower_source.startswith("meta_"):
+        score += 18
+    elif lower_source == "manifest_icon":
+        score += 15
+    elif lower_source == "root_favicon":
+        score += 6
+
+    if "logo" in lower_url:
+        score += 22
+    if "brand" in lower_url:
+        score += 14
+    if "navbar" in lower_url or "header" in lower_url or "nav" in lower_url:
+        score += 10
+    if "favicon" in lower_url:
+        score += 18 if target_type == "favicon" else -8
+    if "apple-touch" in lower_url or "touch-icon" in lower_url:
+        score += 18 if target_type == "touch_icon" else -6
+    if "mask" in lower_url:
+        score += 14 if target_type == "mask_icon" else -4
+    if "tile" in lower_url:
+        score += 14 if target_type == "tile_image" else -4
+    if any(token in lower_url for token in ("og-image", "social", "share", "banner", "hero", "cover")):
+        score += 20 if target_type == "social_image" else -24
+
+    if lower_url.endswith(".svg"):
+        score += 12 if target_type == "brand_logo" else 4
+    elif lower_url.endswith(".ico"):
+        score += 14 if target_type == "favicon" else 3
+    elif lower_url.endswith(".png"):
+        score += 7
+    elif lower_url.endswith(".webp"):
+        score += 6
+
+    return score
+
+
 def parse_page(page: Selector, fetch_mode: str, status_code: int | None = None) -> PageSnapshot:
     title = clean_text(page.css("title::text").get(default=""))
     description = clean_text(
@@ -722,7 +1448,6 @@ def parse_page(page: Selector, fetch_mode: str, status_code: int | None = None) 
 
     structured_data, faq_items, structured_entities = extract_structured_data(page)
     cta_texts = extract_cta_texts(page)
-    value_props = extract_value_props(page)
     nav_labels = extract_nav_labels(page)
     pricing_signals = extract_pricing_signals(page, raw_text)
     forms = extract_forms(page)
@@ -730,6 +1455,18 @@ def parse_page(page: Selector, fetch_mode: str, status_code: int | None = None) 
     trust_signals = extract_trust_signals(raw_text)
     audience_signals = extract_audience_signals(raw_text, headings, nav_labels)
     proof_points = extract_proof_points(raw_text, trust_signals)
+    zones = extract_semantic_zones(
+        page,
+        raw_text=raw_text,
+        page_type=classify_page(page.url, title),
+        hero_messages=hero_messages,
+        trust_signals=trust_signals,
+        audience_signals=audience_signals,
+        proof_points=proof_points,
+        pricing_signals=pricing_signals,
+        faq_items=faq_items,
+    )
+    value_props = extract_value_props(page, zones)
     entity_labels = unique_ordered(structured_entities + extract_repeated_entities(page))[:12]
     image_alts = unique_ordered(
         [clean_text(alt) for alt in page.css("img::attr(alt)").getall() if clean_text(alt)]
@@ -768,6 +1505,7 @@ def parse_page(page: Selector, fetch_mode: str, status_code: int | None = None) 
         trust_signals=trust_signals[:8],
         audience_signals=audience_signals[:8],
         proof_points=proof_points[:8],
+        zones={key: values[:8] for key, values in zones.items()},
         meta=meta,
     )
 
@@ -783,6 +1521,7 @@ def build_bundle(
     pages_visited: int,
     pages_failed: int,
     sitemap_urls: list[str],
+    brand_assets: BrandAssets | None = None,
 ) -> CrawlBundle:
     full_text = "\n".join(page.raw_text for page in pages)
     contact_signals = ContactSignals(
@@ -799,7 +1538,7 @@ def build_bundle(
         addresses=extract_address_candidates(pages),
     )
 
-    site_signals = build_site_signals(pages)
+    site_signals = build_site_signals(pages, brand_assets=brand_assets)
     research_package = build_research_package(website, domain, pages, contact_signals, site_signals)
     clean_notes = standardize_crawl_notes(notes)
     pages_succeeded = len(pages)
@@ -830,7 +1569,7 @@ def build_bundle(
     )
 
 
-def build_site_signals(pages: list[PageSnapshot]) -> SiteSignals:
+def build_site_signals(pages: list[PageSnapshot], brand_assets: BrandAssets | None = None) -> SiteSignals:
     technologies = unique_ordered([tech for page in pages for tech in page.technologies])[:12]
     currencies = unique_ordered([currency for page in pages for currency in page.currencies])[:8]
     cta_texts = unique_ordered([cta for page in pages for cta in page.cta_texts])[:16]
@@ -841,7 +1580,8 @@ def build_site_signals(pages: list[PageSnapshot]) -> SiteSignals:
     pricing_signals = unique_ordered([price for page in pages for price in page.pricing_signals])[:12]
     page_counter = Counter(page.page_type for page in pages)
     page_mix = [f"{page_type}: {count}" for page_type, count in page_counter.most_common()]
-    logo_url = choose_logo_url(pages)
+    resolved_brand_assets = brand_assets or choose_brand_assets(pages)
+    logo_url = resolved_brand_assets.brand_logo or resolved_brand_assets.favicon or choose_logo_url(pages)
 
     return SiteSignals(
         technologies=technologies,
@@ -851,6 +1591,7 @@ def build_site_signals(pages: list[PageSnapshot]) -> SiteSignals:
         entity_labels=entity_labels,
         page_mix=page_mix,
         pricing_signals=pricing_signals,
+        brand_assets=resolved_brand_assets,
         logo_url=logo_url,
     )
 
@@ -864,20 +1605,56 @@ def build_research_package(
 ) -> ResearchPackage:
     company_name_candidates = infer_company_name_candidates(pages, domain)
     hero_messages = unique_ordered([message for page in pages for message in page.hero_messages])[:12]
+    semantic_zones = build_semantic_zone_summary(pages)
     inferred_service_offers, inferred_product_offers = infer_offer_buckets(pages)
-    service_offers = unique_ordered(collect_offer_labels(pages, {"service"}) + inferred_service_offers)[:14]
-    product_offers = unique_ordered(collect_offer_labels(pages, {"product"}) + inferred_product_offers)[:14]
-    offer_signals = unique_ordered(
+    service_offers = clean_signal_list(
+        collect_offer_labels(pages, {"service"}) + inferred_service_offers,
+        min_len=4,
+        max_len=120,
+    )[:14]
+    product_offers = clean_signal_list(
+        collect_offer_labels(pages, {"product"}) + inferred_product_offers,
+        min_len=4,
+        max_len=120,
+    )[:14]
+    core_value_props = build_core_value_props(pages, semantic_zones)
+    supporting_benefits = build_supporting_benefits(pages, semantic_zones)
+    proof_claims = build_proof_claims(pages, semantic_zones)
+    audience_claims = build_audience_claims(pages, semantic_zones)
+    cta_claims = build_cta_claims(pages, site_signals)
+    evidence_blocks = build_evidence_blocks(
+        pages,
+        core_value_props=core_value_props,
+        supporting_benefits=supporting_benefits,
+        proof_claims=proof_claims,
+        audience_claims=audience_claims,
+    )
+    offer_signals = clean_signal_list(
         [
             *hero_messages,
-            *[value for page in pages for value in page.value_props],
+            *core_value_props,
+            *supporting_benefits,
             *[label for page in pages for label in page.entity_labels],
             *[heading for page in pages for heading in page.headings],
-        ]
+        ],
+        min_len=12,
+        max_len=220,
     )[:18]
-    audience_signals = unique_ordered([value for page in pages for value in page.audience_signals])[:14]
-    trust_signals = unique_ordered([value for page in pages for value in page.trust_signals])[:14]
-    proof_points = unique_ordered([value for page in pages for value in page.proof_points])[:12]
+    audience_signals = clean_signal_list(
+        [value for page in pages for value in page.audience_signals],
+        min_len=12,
+        max_len=180,
+    )[:14]
+    trust_signals = clean_signal_list(
+        [value for page in pages for value in page.trust_signals],
+        min_len=12,
+        max_len=180,
+    )[:14]
+    proof_points = clean_signal_list(
+        [value for page in pages for value in page.proof_points],
+        min_len=12,
+        max_len=180,
+    )[:12]
     conversion_actions = build_conversion_actions(pages, site_signals, contact_signals)
     content_topics = build_content_topics(pages)
     seo_signals = build_seo_signals(pages)
@@ -887,6 +1664,7 @@ def build_research_package(
     visual_signals = build_visual_signals(pages, site_signals)
     positioning_signals = build_positioning_signals(
         hero_messages=hero_messages,
+        core_value_props=core_value_props,
         service_offers=service_offers,
         product_offers=product_offers,
         pages=pages,
@@ -897,6 +1675,7 @@ def build_research_package(
     return ResearchPackage(
         company_name_candidates=company_name_candidates,
         hero_messages=hero_messages,
+        semantic_zones=semantic_zones,
         positioning_signals=positioning_signals,
         offer_signals=offer_signals,
         service_offers=service_offers,
@@ -911,7 +1690,267 @@ def build_research_package(
         language_signals=language_signals,
         market_signals=market_signals,
         visual_signals=visual_signals,
+        core_value_props=core_value_props,
+        supporting_benefits=supporting_benefits,
+        proof_claims=proof_claims,
+        audience_claims=audience_claims,
+        cta_claims=cta_claims,
+        evidence_blocks=evidence_blocks,
     )
+
+
+def build_semantic_zone_summary(pages: list[PageSnapshot]) -> dict[str, list[str]]:
+    summary: dict[str, list[str]] = {
+        "hero": [],
+        "offers": [],
+        "proof": [],
+        "pricing": [],
+        "faq": [],
+        "contact": [],
+    }
+
+    for page in pages:
+        for zone_name, values in page.zones.items():
+            if zone_name not in summary:
+                summary[zone_name] = []
+            summary[zone_name].extend(values)
+
+    return {
+        zone_name: unique_ordered([clean_text(value) for value in values if clean_text(value)])[:12]
+        for zone_name, values in summary.items()
+    }
+
+
+def build_core_value_props(pages: list[PageSnapshot], semantic_zones: dict[str, list[str]]) -> list[str]:
+    primary = pages[0]
+    candidates = unique_ordered(
+        [
+            *semantic_zones.get("hero", []),
+            *semantic_zones.get("offers", []),
+            primary.description,
+            *primary.headings[:6],
+        ]
+    )
+    return rank_filtered_claim_candidates(candidates, claim_type="value_prop")[:8]
+
+
+def build_supporting_benefits(pages: list[PageSnapshot], semantic_zones: dict[str, list[str]]) -> list[str]:
+    candidates = unique_ordered(
+        [
+            *semantic_zones.get("offers", []),
+            *[value for page in pages for value in page.value_props],
+            *[value for page in pages for value in page.headings[1:5]],
+        ]
+    )
+    return rank_filtered_claim_candidates(candidates, claim_type="benefit")[:10]
+
+
+def build_proof_claims(pages: list[PageSnapshot], semantic_zones: dict[str, list[str]]) -> list[str]:
+    candidates = unique_ordered(
+        [
+            *semantic_zones.get("proof", []),
+            *[value for page in pages for value in page.proof_points],
+            *[value for page in pages for value in page.trust_signals],
+        ]
+    )
+    return rank_filtered_claim_candidates(candidates, claim_type="proof")[:10]
+
+
+def build_audience_claims(pages: list[PageSnapshot], semantic_zones: dict[str, list[str]]) -> list[str]:
+    candidates = unique_ordered(
+        [
+            *semantic_zones.get("contact", []),
+            *[value for page in pages for value in page.audience_signals],
+        ]
+    )
+    return rank_filtered_claim_candidates(candidates, claim_type="audience")[:10]
+
+
+def build_cta_claims(pages: list[PageSnapshot], site_signals: SiteSignals) -> list[str]:
+    candidates = unique_ordered(
+        [
+            *[f"CTA: {value}" for value in site_signals.cta_texts],
+            *[
+                f"{page.page_type} formu: {', '.join(form.fields[:4]) or 'alan bilgisi sınırlı'}"
+                for page in pages
+                for form in page.forms[:2]
+            ],
+        ]
+    )
+    return rank_filtered_claim_candidates(candidates, claim_type="cta")[:10]
+
+
+def build_evidence_blocks(
+    pages: list[PageSnapshot],
+    *,
+    core_value_props: list[str],
+    supporting_benefits: list[str],
+    proof_claims: list[str],
+    audience_claims: list[str],
+) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    blocks.extend(
+        create_evidence_block("value_prop", claim, pages, why="Hero ve teklif bölgelerinde tekrar eden ana vaat.")
+        for claim in core_value_props[:3]
+    )
+    blocks.extend(
+        create_evidence_block("benefit", claim, pages, why="Teklif bölgeleri ve detay sayfalarında desteklenen fayda.")
+        for claim in supporting_benefits[:3]
+    )
+    blocks.extend(
+        create_evidence_block("proof", claim, pages, why="Güven ve kanıt katmanlarında görülen destekleyici sinyal.")
+        for claim in proof_claims[:3]
+    )
+    blocks.extend(
+        create_evidence_block("audience", claim, pages, why="Hedef kitle veya kullanım senaryosu sinyali.")
+        for claim in audience_claims[:3]
+    )
+    return [block for block in blocks if block.get("claim")]
+
+
+def create_evidence_block(
+    evidence_type: str,
+    claim: str,
+    pages: list[PageSnapshot],
+    *,
+    why: str,
+) -> dict[str, Any]:
+    evidence_urls = find_claim_evidence_urls(claim, pages)
+    confidence = min(0.95, 0.48 + (0.12 * len(evidence_urls)))
+    return {
+        "type": evidence_type,
+        "claim": claim,
+        "why": why,
+        "confidence": round(confidence, 2),
+        "evidenceUrls": evidence_urls[:4],
+    }
+
+
+def find_claim_evidence_urls(claim: str, pages: list[PageSnapshot]) -> list[str]:
+    claim_tokens = {
+        token
+        for token in re.findall(r"[a-zA-ZçğıöşüÇĞİÖŞÜ0-9]{4,}", claim.lower())
+        if token not in {"with", "from", "your", "that", "this", "have", "more", "site", "page"}
+    }
+    matched_urls: list[str] = []
+
+    for page in pages:
+        haystack = " ".join(
+            [
+                page.title,
+                page.description,
+                page.main_content[:2400],
+                " ".join(page.headings[:8]),
+                " ".join(page.hero_messages[:6]),
+                " ".join(page.value_props[:6]),
+            ]
+        ).lower()
+        if not claim_tokens:
+            continue
+        overlap = sum(1 for token in claim_tokens if token in haystack)
+        if overlap >= max(1, min(2, len(claim_tokens))):
+            matched_urls.append(page.url)
+
+    return unique_ordered(matched_urls)
+
+
+def rank_claim_candidates(candidates: list[str], *, claim_type: str) -> list[str]:
+    scored: list[tuple[int, str]] = []
+    for candidate in candidates:
+        text = clean_text(candidate)
+        if not text:
+            continue
+        score = score_claim_candidate(text, claim_type=claim_type)
+        if score <= 0:
+            continue
+        scored.append((score, text))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return unique_ordered([text for _, text in scored])
+
+
+def rank_filtered_claim_candidates(candidates: list[str], *, claim_type: str) -> list[str]:
+    return rank_claim_candidates(
+        clean_signal_list(
+            candidates,
+            min_len=12,
+            max_len=220,
+            allow_cta=claim_type == "cta",
+        ),
+        claim_type=claim_type,
+    )
+
+
+def score_claim_candidate(text: str, *, claim_type: str) -> int:
+    lowered = text.lower()
+    if len(text) < 12 or len(text) > 220:
+        return 0
+    if lowered in GENERIC_TOPIC_TERMS:
+        return 0
+    if is_low_signal_text(text, allow_cta=claim_type == "cta"):
+        return 0
+    if any(token in lowered for token in ("cookie", "privacy", "terms", "gizlilik", "çerez", "login", "giriş")):
+        return 0
+
+    score = 10
+    benefit_tokens = (
+        "increase",
+        "improve",
+        "optimize",
+        "scale",
+        "automate",
+        "track",
+        "measure",
+        "manage",
+        "grow",
+        "reduce",
+        "save",
+        "build",
+        "boost",
+        "artır",
+        "iyileştir",
+        "ölç",
+        "yönet",
+        "otomasyon",
+        "takip",
+        "büyü",
+        "kazan",
+        "hızlı",
+        "kolay",
+        "verim",
+    )
+    audience_tokens = ("for", "için", "teams", "ekip", "brands", "marka", "business", "işletme", "kobi", "startup")
+    proof_tokens = ("client", "müşteri", "trusted", "referans", "award", "ödül", "%", "+", "case", "teknopark")
+    cta_tokens = ("cta:", "demo", "start", "book", "contact", "teklif", "başla", "dene", "get")
+
+    if any(token in lowered for token in benefit_tokens):
+        score += 18
+    if any(token in lowered for token in audience_tokens):
+        score += 10
+    if any(token in lowered for token in proof_tokens):
+        score += 12
+    if any(char.isdigit() for char in text):
+        score += 6
+
+    if claim_type == "value_prop":
+        if any(token in lowered for token in benefit_tokens):
+            score += 12
+        if any(token in lowered for token in audience_tokens):
+            score += 8
+    elif claim_type == "benefit":
+        if any(token in lowered for token in benefit_tokens):
+            score += 16
+    elif claim_type == "proof":
+        if any(token in lowered for token in proof_tokens):
+            score += 18
+    elif claim_type == "audience":
+        if any(token in lowered for token in audience_tokens):
+            score += 18
+    elif claim_type == "cta":
+        if any(token in lowered for token in cta_tokens):
+            score += 22
+
+    return score
 
 
 def infer_company_name_candidates(pages: list[PageSnapshot], domain: str) -> list[str]:
@@ -946,6 +1985,8 @@ def collect_offer_labels(pages: list[PageSnapshot], page_types: set[str]) -> lis
             continue
         if lower in GENERIC_TOPIC_TERMS:
             continue
+        if is_low_signal_text(text):
+            continue
         cleaned.append(text)
 
     return unique_ordered(cleaned)[:14]
@@ -963,6 +2004,8 @@ def infer_offer_buckets(pages: list[PageSnapshot]) -> tuple[list[str], list[str]
                 continue
             if lower in GENERIC_TOPIC_TERMS:
                 continue
+            if is_low_signal_text(text):
+                continue
             service_match = any(token in lower for token in SERVICE_OFFER_HINTS)
             product_match = any(token in lower for token in PRODUCT_OFFER_HINTS)
             if service_match and not product_match:
@@ -977,18 +2020,22 @@ def infer_offer_buckets(pages: list[PageSnapshot]) -> tuple[list[str], list[str]
                 else:
                     service_labels.append(text)
 
-    return unique_ordered(service_labels)[:14], unique_ordered(product_labels)[:14]
+    return (
+        clean_signal_list(service_labels, min_len=4, max_len=120)[:14],
+        clean_signal_list(product_labels, min_len=4, max_len=120)[:14],
+    )
 
 
 def build_positioning_signals(
     hero_messages: list[str],
+    core_value_props: list[str],
     service_offers: list[str],
     product_offers: list[str],
     pages: list[PageSnapshot],
     contact_signals: ContactSignals,
     site_signals: SiteSignals,
 ) -> list[str]:
-    signals = list(hero_messages[:3])
+    signals = list(hero_messages[:3]) + core_value_props[:3]
     primary = pages[0]
 
     if primary.description:
@@ -1045,6 +2092,8 @@ def build_content_topics(pages: list[PageSnapshot]) -> list[str]:
         if not text or len(text) < 4 or len(text) > 120:
             continue
         if lower in GENERIC_TOPIC_TERMS:
+            continue
+        if not is_topic_candidate(text):
             continue
         cleaned.append(text)
 
@@ -1140,8 +2189,12 @@ def build_visual_signals(pages: list[PageSnapshot], site_signals: SiteSignals) -
         clean_text(page.meta.get("bodyClass", "")) for page in pages if clean_text(page.meta.get("bodyClass", ""))
     ).lower()
 
-    if site_signals.logo_url:
-        signals.append(f"Logo varlığı tespit edildi: {site_signals.logo_url}")
+    if site_signals.brand_assets.brand_logo:
+        signals.append(f"Ana marka logosu tespit edildi: {site_signals.brand_assets.brand_logo}")
+    elif site_signals.logo_url:
+        signals.append(f"Logo benzeri görsel tespit edildi: {site_signals.logo_url}")
+    if site_signals.brand_assets.favicon:
+        signals.append(f"Favicon varlığı tespit edildi: {site_signals.brand_assets.favicon}")
     if theme_colors:
         signals.append(f"Theme color sinyali: {', '.join(theme_colors[:4])}.")
     if "dark" in body_classes:
@@ -1183,6 +2236,10 @@ def extract_meta_tags(page: Selector) -> dict[str, str]:
         "icon": page.css("link[rel='icon']::attr(href)").get(default=""),
         "shortcutIcon": page.css("link[rel='shortcut icon']::attr(href)").get(default=""),
         "appleTouchIcon": page.css("link[rel='apple-touch-icon']::attr(href)").get(default=""),
+        "appleTouchIconPrecomposed": page.css("link[rel='apple-touch-icon-precomposed']::attr(href)").get(default=""),
+        "maskIcon": page.css("link[rel='mask-icon']::attr(href)").get(default=""),
+        "manifest": page.css("link[rel='manifest']::attr(href)").get(default=""),
+        "msTileImage": page.css("meta[name='msapplication-TileImage']::attr(content)").get(default=""),
         "twitterCard": page.css("meta[name='twitter:card']::attr(content)").get(default=""),
         "language": page.css("html::attr(lang)").get(default=""),
         "themeColor": page.css("meta[name='theme-color']::attr(content)").get(default=""),
@@ -1202,6 +2259,8 @@ def extract_hero_messages(page: Selector) -> list[str]:
         text = clean_text(value)
         if not text or len(text) < 12 or len(text) > 180:
             continue
+        if is_low_signal_text(text):
+            continue
         cleaned.append(text)
 
     return unique_ordered(cleaned)[:8]
@@ -1213,12 +2272,12 @@ def extract_trust_signals(raw_text: str) -> list[str]:
 
 def extract_audience_signals(raw_text: str, headings: list[str], nav_labels: list[str]) -> list[str]:
     matches = extract_sentence_matches(raw_text, AUDIENCE_KEYWORDS, min_len=14, max_len=180)
-    for value in [*headings, *nav_labels]:
+    for value in headings:
         text = clean_text(value)
         lowered = text.lower()
-        if text and any(keyword in lowered for keyword in AUDIENCE_KEYWORDS):
+        if text and not is_low_signal_text(text) and any(keyword in lowered for keyword in AUDIENCE_KEYWORDS):
             matches.append(text)
-    return unique_ordered(matches)[:10]
+    return clean_signal_list(matches, min_len=14, max_len=180)[:10]
 
 
 def extract_proof_points(raw_text: str, trust_signals: list[str]) -> list[str]:
@@ -1236,6 +2295,139 @@ def extract_proof_points(raw_text: str, trust_signals: list[str]) -> list[str]:
         ]
     )
     return unique_ordered(points)[:10]
+
+
+def extract_semantic_zones(
+    page: Selector,
+    *,
+    raw_text: str,
+    page_type: str,
+    hero_messages: list[str],
+    trust_signals: list[str],
+    audience_signals: list[str],
+    proof_points: list[str],
+    pricing_signals: list[str],
+    faq_items: list[FaqItem],
+) -> dict[str, list[str]]:
+    hero_zone = unique_ordered(
+        hero_messages
+        + extract_zone_texts(
+            page,
+            "main h1, main h2, [class*='hero'], [id*='hero'], header h1, main > section:first-child",
+            identifier=f"{page_type}:hero",
+        )
+    )[:8]
+    offer_zone = extract_zone_texts(
+        page,
+        "[class*='feature'], [class*='service'], [class*='product'], [class*='solution'], "
+        "[class*='benefit'], [class*='card'], main section",
+        identifier=f"{page_type}:offers",
+    )
+    proof_zone = unique_ordered(
+        trust_signals
+        + proof_points
+        + extract_zone_texts(
+            page,
+            "[class*='testimonial'], [class*='review'], [class*='client'], [class*='partner'], "
+            "[class*='trust'], [class*='case'], [class*='reference']",
+            identifier=f"{page_type}:proof",
+        )
+    )[:10]
+    pricing_zone = unique_ordered(
+        pricing_signals
+        + extract_zone_texts(
+            page,
+            "[class*='pricing'], [class*='price'], [class*='plan'], [data-price], table",
+            identifier=f"{page_type}:pricing",
+        )
+    )[:10]
+    faq_zone = unique_ordered(
+        [faq.question for faq in faq_items if faq.question]
+        + extract_zone_texts(
+            page,
+            "[class*='faq'], [class*='accordion'], details, summary",
+            identifier=f"{page_type}:faq",
+        )
+    )[:8]
+    contact_zone = unique_ordered(
+        audience_signals[:2]
+        + extract_zone_texts(
+            page,
+            "[class*='contact'], footer, a[href^='mailto:'], a[href^='tel:'], address",
+            identifier=f"{page_type}:contact",
+        )
+    )[:8]
+
+    if page_type in {"service", "product"}:
+        offer_zone = unique_ordered(page.css("h2::text, h3::text").getall() + offer_zone)[:10]
+    if page_type == "pricing":
+        pricing_zone = unique_ordered(page.css("h1::text, h2::text, h3::text").getall() + pricing_zone)[:10]
+    if page_type == "faq":
+        faq_zone = unique_ordered(page.css("h1::text, h2::text, details summary::text").getall() + faq_zone)[:10]
+
+    if not hero_zone:
+        hero_zone = split_sentences(raw_text[:360])[:4]
+
+    return {
+        "hero": [clean_text(value) for value in hero_zone if clean_text(value)],
+        "offers": [clean_text(value) for value in offer_zone if clean_text(value)],
+        "proof": [clean_text(value) for value in proof_zone if clean_text(value)],
+        "pricing": [clean_text(value) for value in pricing_zone if clean_text(value)],
+        "faq": [clean_text(value) for value in faq_zone if clean_text(value)],
+        "contact": [clean_text(value) for value in contact_zone if clean_text(value)],
+    }
+
+
+def extract_zone_texts(
+    page: Selector,
+    selectors: str,
+    *,
+    identifier: str,
+    max_elements: int = 8,
+) -> list[str]:
+    elements = select_zone_elements(page, selectors, identifier=identifier, max_elements=max_elements)
+    texts: list[str] = []
+
+    for element in elements:
+        try:
+            text = clean_text(" ".join(element.css("::text").getall()))
+        except Exception:
+            text = clean_text(getattr(element, "text", ""))
+
+        if not text:
+            continue
+
+        for fragment in split_sentences(text):
+            cleaned = clean_text(fragment)
+            if not cleaned:
+                continue
+            if len(cleaned) < 14 or len(cleaned) > 220:
+                continue
+            if cleaned.lower() in GENERIC_TOPIC_TERMS:
+                continue
+            texts.append(cleaned)
+
+    return unique_ordered(texts)[: max_elements * 2]
+
+
+def select_zone_elements(
+    page: Selector,
+    selectors: str,
+    *,
+    identifier: str,
+    max_elements: int,
+):
+    try:
+        elements = page.css(selectors, auto_save=True, identifier=identifier)
+        if elements:
+            return elements[:max_elements]
+        elements = page.css(selectors, adaptive=True, identifier=identifier)
+        return elements[:max_elements]
+    except Exception:
+        try:
+            return page.css(selectors)[:max_elements]
+        except Exception:
+            return []
 
 
 def extract_sentence_matches(
@@ -1257,18 +2449,31 @@ def extract_sentence_matches(
 def extract_logo_candidates(page: Selector) -> list[str]:
     candidates: list[str] = []
 
-    for image in page.css("img")[:24]:
+    image_selectors = (
+        "header img, nav img, [class*='header'] img, [class*='nav'] img, "
+        "[class*='logo'] img, img[class*='logo'], img[alt*='logo'], "
+        "a[href='/'] img, a[href='./'] img, picture img, img"
+    )
+
+    for image in page.css(image_selectors)[:40]:
         src = (
             image.attrib.get("src")
             or image.attrib.get("data-src")
             or image.attrib.get("data-lazy-src")
+            or image.attrib.get("data-srcset", "").split(",")[0].strip().split(" ")[0]
             or image.attrib.get("srcset", "").split(",")[0].strip().split(" ")[0]
         )
         alt = clean_text(image.attrib.get("alt", ""))
         class_text = clean_text(" ".join(image.attrib.get("class", "").split()))
+        parent_href = ""
+        parent = getattr(image, "parent", None)
+        if parent is not None and hasattr(parent, "attrib"):
+            parent_href = clean_text(parent.attrib.get("href", ""))
+
+        haystack = f"{alt} {class_text} {src} {parent_href}".lower()
         if not src:
             continue
-        if any(keyword in f"{alt} {class_text} {src}".lower() for keyword in ("logo", "brand", "icon", "navbar")):
+        if any(keyword in haystack for keyword in ("logo", "brand", "icon", "navbar", "header", "/logo", "site-logo")):
             resolved = resolve_asset_url(page.url, src)
             if resolved:
                 candidates.append(resolved)
@@ -1440,21 +2645,29 @@ def extract_cta_texts(page: Selector) -> list[str]:
     ]
 
 
-def extract_value_props(page: Selector) -> list[str]:
-    candidates = page.css("h2::text, h3::text, li::text, p::text").getall()
-    cleaned = []
+def extract_value_props(page: Selector, zones: dict[str, list[str]] | None = None) -> list[str]:
+    zone_candidates = []
+    if zones:
+        zone_candidates.extend(zones.get("hero", []))
+        zone_candidates.extend(zones.get("offers", []))
+
+    selector_candidates = page.css("h1::text, h2::text, h3::text, li::text, p::text").getall()
+    candidates = unique_ordered([*zone_candidates, *selector_candidates])
+    cleaned: list[str] = []
 
     for value in candidates:
         text = clean_text(value)
         if not text:
             continue
-        if len(text) < 18 or len(text) > 160:
+        if len(text) < 18 or len(text) > 180:
             continue
-        if text.lower() in {"menu", "blog", "home", "pricing", "contact"}:
+        if is_low_signal_text(text):
+            continue
+        if score_claim_candidate(text, claim_type="value_prop") <= 12:
             continue
         cleaned.append(text)
 
-    return unique_ordered(cleaned)
+    return unique_ordered(cleaned)[:12]
 
 
 def extract_nav_labels(page: Selector) -> list[str]:
@@ -1673,6 +2886,59 @@ def canonicalize_url(url: str) -> str:
 
 def clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def clean_signal_list(
+    values: Iterable[str],
+    *,
+    min_len: int = 12,
+    max_len: int = 220,
+    allow_cta: bool = False,
+) -> list[str]:
+    cleaned: list[str] = []
+    for value in values:
+        text = clean_text(value)
+        if not text or len(text) < min_len or len(text) > max_len:
+            continue
+        if is_low_signal_text(text, allow_cta=allow_cta):
+            continue
+        cleaned.append(text)
+    return unique_ordered(cleaned)
+
+
+def is_topic_candidate(text: str) -> bool:
+    normalized = clean_text(text)
+    lowered = normalized.lower()
+    if not normalized or is_low_signal_text(normalized):
+        return False
+
+    word_count = len(re.findall(r"[a-zA-ZçğıöşüÇĞİÖŞÜ0-9]+", normalized))
+    if word_count <= 3 and not any(token in lowered for token in TOPIC_HINT_TOKENS):
+        return False
+    if lowered in GENERIC_TOPIC_TERMS:
+        return False
+    return True
+
+
+def is_low_signal_text(text: str, *, allow_cta: bool = False) -> bool:
+    lowered = clean_text(text).lower()
+    if not lowered:
+        return True
+    if lowered in GENERIC_TOPIC_TERMS:
+        return True
+    if any(phrase in lowered for phrase in LOW_SIGNAL_PHRASES):
+        return True
+    if "©" in text or "all rights reserved" in lowered:
+        return True
+
+    token_hits = sum(1 for token in NAVIGATION_NOISE_TOKENS if re.search(rf"\b{re.escape(token)}\b", lowered))
+    if token_hits >= 4:
+        return True
+
+    if not allow_cta and lowered.startswith("cta:"):
+        return True
+
+    return False
 
 
 def safe_decode(value: bytes | str) -> str:

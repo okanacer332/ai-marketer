@@ -505,6 +505,7 @@ def ensure_website_document(
     analysis_result = snapshot.get("analysisResult", {}) or {}
     analysis = analysis_result.get("analysis", {}) if isinstance(analysis_result, dict) else {}
     contact_signals = analysis_result.get("contactSignals", {}) if isinstance(analysis_result, dict) else {}
+    brand_assets = analysis.get("brandAssets") if isinstance(analysis.get("brandAssets"), dict) else {}
     current_website_id = workspace_document.get("currentWebsiteId")
 
     website_document = None
@@ -524,6 +525,7 @@ def ensure_website_document(
         "domain": website_domain,
         "brandName": analysis.get("companyName") if isinstance(analysis.get("companyName"), str) else None,
         "logoUrl": analysis.get("logoUrl") if isinstance(analysis.get("logoUrl"), str) else None,
+        "brandAssets": repair_value(brand_assets) if isinstance(brand_assets, dict) else {},
         "language": "tr",
         "currencies": [],
         "contactSignals": repair_value(contact_signals) if isinstance(contact_signals, dict) else {},
@@ -623,6 +625,7 @@ def create_analysis_run(
             "companyName": analysis.get("companyName", ""),
             "domain": analysis.get("domain", ""),
             "logoUrl": analysis.get("logoUrl"),
+            "brandAssets": repair_value(analysis.get("brandAssets")) if isinstance(analysis.get("brandAssets"), dict) else {},
             "sourcePageCount": len(source_pages) if isinstance(source_pages, list) else len(crawl_pages),
             "crawlPageCount": len(crawl_pages) if isinstance(crawl_pages, list) else 0,
             "memoryFileCount": len(memory_files) if isinstance(memory_files, list) else 0,

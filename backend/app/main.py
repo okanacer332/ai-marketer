@@ -13,27 +13,47 @@ from .models import (
     AnalyzeRequest,
     AnalyzeResponse,
     AuditEventListResponseModel,
+    ChatMessageRequest,
+    ChatMessageResponse,
     WorkspaceSnapshotModel,
     WorkspaceSnapshotRequest,
 )
 from .services.analysis_enrichment import build_quality_review, build_strategic_summary
 from .services.audit_store import list_recent_audit_events, serialize_audit_event, write_audit_event
 from .services.auth import AuthenticatedUser, get_current_user
-from .services.chat_store import build_ephemeral_chat_thread
+from .services.chat_store import (
+    CHAT_USER_MESSAGE_LIMIT,
+    append_chat_exchange,
+    build_ephemeral_chat_thread,
+    count_user_messages_for_thread,
+    ensure_workspace_thread,
+    get_latest_thread_for_workspace,
+    get_messages_for_thread,
+    serialize_chat_thread,
+)
 from .services.fallback import (
     FALLBACK_ENGINE_VERSION,
     FALLBACK_PROMPT_VERSION,
     build_fallback_analysis,
 )
-from .services.gemini import GEMINI_PROMPT_VERSION, generate_analysis_with_gemini
+from .services.gemini import (
+    GEMINI_CHAT_PROMPT_VERSION,
+    GEMINI_PROMPT_VERSION,
+    build_fallback_chat_reply,
+    generate_analysis_with_gemini,
+    generate_chat_reply_with_gemini,
+)
 from .services.integration_store import build_preview_integration_payload
 from .services.memory_templates import normalize_memory_files
 from .services.observability import configure_observability, duration_ms, log_structured, now_perf
+from .services.output_normalizer import normalize_analysis_payload_language
 from .services.scrape import crawl_website
+from .services.database import utc_now
 from .services.user_store import ensure_user_indexes, get_user_by_identity
 from .services.workspace_store import (
     ensure_indexes,
     get_active_workspace_context,
+    get_workspaces_collection,
     get_workspace_snapshot,
     ping_database,
     save_workspace_snapshot,
@@ -243,6 +263,8 @@ async def analyze_website(
             payload.connected_platforms,
         )
 
+    analysis_payload = normalize_analysis_payload_language(analysis_payload)
+
     analysis_payload.setdefault("analysis", {})
     strategic_summary = build_strategic_summary(bundle, analysis_payload, payload.goals)
     analysis_payload["strategicSummary"] = strategic_summary
@@ -272,6 +294,16 @@ async def analyze_website(
     )
 
     analysis_payload["analysis"]["logoUrl"] = bundle.site_signals.logo_url or None
+    analysis_payload["analysis"]["brandAssets"] = {
+        "brandLogo": bundle.site_signals.brand_assets.brand_logo or None,
+        "favicon": bundle.site_signals.brand_assets.favicon or None,
+        "touchIcon": bundle.site_signals.brand_assets.touch_icon or None,
+        "socialImage": bundle.site_signals.brand_assets.social_image or None,
+        "manifestUrl": bundle.site_signals.brand_assets.manifest_url or None,
+        "maskIcon": bundle.site_signals.brand_assets.mask_icon or None,
+        "tileImage": bundle.site_signals.brand_assets.tile_image or None,
+        "candidates": bundle.site_signals.brand_assets.candidates[:16],
+    }
     preview_integrations = build_preview_integration_payload(payload.connected_platforms)
 
     notes = list(bundle.notes)
@@ -324,6 +356,7 @@ async def analyze_website(
             "researchPackage": {
                 "companyNameCandidates": bundle.research_package.company_name_candidates,
                 "heroMessages": bundle.research_package.hero_messages,
+                "semanticZones": bundle.research_package.semantic_zones,
                 "positioningSignals": bundle.research_package.positioning_signals,
                 "offerSignals": bundle.research_package.offer_signals,
                 "serviceOffers": bundle.research_package.service_offers,
@@ -338,6 +371,12 @@ async def analyze_website(
                 "languageSignals": bundle.research_package.language_signals,
                 "marketSignals": bundle.research_package.market_signals,
                 "visualSignals": bundle.research_package.visual_signals,
+                "coreValueProps": bundle.research_package.core_value_props,
+                "supportingBenefits": bundle.research_package.supporting_benefits,
+                "proofClaims": bundle.research_package.proof_claims,
+                "audienceClaims": bundle.research_package.audience_claims,
+                "ctaClaims": bundle.research_package.cta_claims,
+                "evidenceBlocks": bundle.research_package.evidence_blocks,
             },
             "strategicSummary": analysis_payload.get("strategicSummary"),
             "qualityReview": analysis_payload.get("qualityReview"),
@@ -387,6 +426,7 @@ async def analyze_website(
                     "logoCandidates": page.logo_candidates,
                     "technologies": page.technologies,
                     "currencies": page.currencies,
+                    "zones": page.zones,
                     "meta": page.meta,
                 }
                 for page in bundle.pages
@@ -420,6 +460,7 @@ async def analyze_website(
                     "researchPackage": {
                         "companyNameCandidates": bundle.research_package.company_name_candidates,
                         "heroMessages": bundle.research_package.hero_messages,
+                        "semanticZones": bundle.research_package.semantic_zones,
                         "positioningSignals": bundle.research_package.positioning_signals,
                         "offerSignals": bundle.research_package.offer_signals,
                         "serviceOffers": bundle.research_package.service_offers,
@@ -434,6 +475,12 @@ async def analyze_website(
                         "languageSignals": bundle.research_package.language_signals,
                         "marketSignals": bundle.research_package.market_signals,
                         "visualSignals": bundle.research_package.visual_signals,
+                        "coreValueProps": bundle.research_package.core_value_props,
+                        "supportingBenefits": bundle.research_package.supporting_benefits,
+                        "proofClaims": bundle.research_package.proof_claims,
+                        "audienceClaims": bundle.research_package.audience_claims,
+                        "ctaClaims": bundle.research_package.cta_claims,
+                        "evidenceBlocks": bundle.research_package.evidence_blocks,
                     },
                     "strategicSummary": analysis_payload.get("strategicSummary"),
                     "qualityReview": analysis_payload.get("qualityReview"),
@@ -589,6 +636,138 @@ def persist_workspace_snapshot(
         ),
     )
     return {"status": "ok"}
+
+
+@app.post("/api/chat-message", response_model=ChatMessageResponse)
+async def send_chat_message(
+    payload: ChatMessageRequest,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> ChatMessageResponse:
+    request_id = getattr(request.state, "request_id", None)
+    message_text = payload.message.strip()
+
+    if not message_text:
+        raise HTTPException(status_code=400, detail="Mesaj boş olamaz.")
+
+    context = get_active_workspace_context(current_user.uid, current_user.email)
+    if not context or not isinstance(context.get("workspaceDocument"), dict):
+        raise HTTPException(status_code=404, detail="Aktif çalışma alanı bulunamadı.")
+    if not isinstance(context.get("analysisRunDocument"), dict):
+        raise HTTPException(status_code=404, detail="Önce bir analiz oluşturmanız gerekiyor.")
+    if not isinstance(context.get("userDocument"), dict):
+        raise HTTPException(status_code=404, detail="Kullanıcı kaydı bulunamadı.")
+
+    workspace_document = context["workspaceDocument"]
+    analysis_run_document = context["analysisRunDocument"]
+    user_document = context["userDocument"]
+    specialist_id = str(workspace_document.get("selectedSpecialist") or "aylin")
+    now = utc_now()
+
+    workspace_snapshot = get_workspace_snapshot(current_user.uid, current_user.email)
+    if not workspace_snapshot:
+        raise HTTPException(status_code=404, detail="Çalışma alanı verisi bulunamadı.")
+
+    thread_document = get_latest_thread_for_workspace(workspace_document)
+    if not thread_document:
+        thread_document = ensure_workspace_thread(
+            workspace_document=workspace_document,
+            user_document=user_document,
+            analysis_result=workspace_snapshot.get("analysisResult", {}),
+            now=now,
+        )
+        get_workspaces_collection().update_one(
+            {"_id": workspace_document["_id"]},
+            {
+                "$set": {
+                    "latestThreadId": thread_document["_id"],
+                    "updatedAt": now,
+                }
+            },
+        )
+
+    user_message_count = count_user_messages_for_thread(thread_document["_id"])
+    if user_message_count >= CHAT_USER_MESSAGE_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bu oturum için maksimum {CHAT_USER_MESSAGE_LIMIT} mesaj hakkı doldu.",
+        )
+
+    message_documents = get_messages_for_thread(thread_document["_id"], limit=24)
+    assistant_reply = None
+    used_gemini_chat = False
+    try:
+        assistant_reply = await generate_chat_reply_with_gemini(
+            workspace_snapshot=workspace_snapshot,
+            recent_messages=message_documents,
+            user_message=message_text,
+        )
+        used_gemini_chat = bool(assistant_reply)
+    except Exception as exc:
+        log_structured(
+            "chat_reply_fallback",
+            level="warning",
+            requestId=request_id,
+            firebaseUid=current_user.uid,
+            workspaceId=str(workspace_document["_id"]),
+            error=str(exc),
+        )
+
+    if not assistant_reply:
+        assistant_reply = build_fallback_chat_reply(
+            workspace_snapshot=workspace_snapshot,
+            user_message=message_text,
+        )
+
+    updated_messages = append_chat_exchange(
+        thread_document=thread_document,
+        workspace_document=workspace_document,
+        user_document=user_document,
+        user_message=message_text,
+        assistant_message=assistant_reply,
+        specialist_id=specialist_id,
+        related_analysis_run_id=analysis_run_document.get("_id"),
+        now=now,
+    )
+    refreshed_thread = get_latest_thread_for_workspace(workspace_document) or thread_document
+    total_user_messages = count_user_messages_for_thread(thread_document["_id"])
+    remaining_user_messages = max(CHAT_USER_MESSAGE_LIMIT - total_user_messages, 0)
+
+    write_audit_event(
+        event_type="chat_message_sent",
+        status="success",
+        entity_type="chat_thread",
+        entity_id=thread_document.get("_id"),
+        user_document=user_document,
+        workspace_document=workspace_document,
+        website_document=context.get("websiteDocument") if isinstance(context.get("websiteDocument"), dict) else None,
+        analysis_run_id=analysis_run_document.get("_id"),
+        thread_id=thread_document.get("_id"),
+        request_id=request_id,
+        payload={
+            "messageLength": len(message_text),
+            "remainingUserMessages": remaining_user_messages,
+            "maxUserMessages": CHAT_USER_MESSAGE_LIMIT,
+            "promptVersion": GEMINI_CHAT_PROMPT_VERSION if used_gemini_chat else "fallback-chat-v1",
+        },
+    )
+    log_structured(
+        "chat_message_sent",
+        requestId=request_id,
+        firebaseUid=current_user.uid,
+        workspaceId=str(workspace_document["_id"]),
+        threadId=str(thread_document["_id"]),
+        remainingUserMessages=remaining_user_messages,
+        maxUserMessages=CHAT_USER_MESSAGE_LIMIT,
+    )
+
+    return ChatMessageResponse.model_validate(
+        {
+            "chatThread": serialize_chat_thread(refreshed_thread, updated_messages),
+            "remainingUserMessages": remaining_user_messages,
+            "maxUserMessages": CHAT_USER_MESSAGE_LIMIT,
+        }
+    )
 
 
 @app.get("/api/ops/recent-events", response_model=AuditEventListResponseModel)

@@ -14,18 +14,13 @@ def build_strategic_summary(
     research = bundle.research_package
     active_goals = goals or ["SEO", "Sosyal Medya", "İçerik"]
 
-    positioning = first_non_empty(
-        [
-            *research.positioning_signals,
-            analysis.get("offer"),
-            bundle.primary_page.description,
-        ]
-    )
+    positioning = synthesize_positioning(research, analysis)
     differentiation = infer_differentiation(research, analysis)
     best_fit_audience = first_non_empty(
         [
             analysis.get("audience"),
-            "; ".join(research.audience_signals[:4]) if research.audience_signals else "",
+            "; ".join(research.audience_claims[:3]) if research.audience_claims else "",
+            "; ".join(research.audience_signals[:3]) if research.audience_signals else "",
         ]
     )
     primary_growth_lever = first_non_empty(
@@ -65,16 +60,16 @@ def build_quality_review(
         evaluate_check(
             "audience_specificity",
             "Hedef kitle belirginliği",
-            bool(research.audience_signals) or word_count(as_text(analysis.get("audience"))) >= 8,
+            bool(research.audience_claims or research.audience_signals) or word_count(as_text(analysis.get("audience"))) >= 8,
             "Hedef kitle için somut sinyaller var."
-            if research.audience_signals
+            if research.audience_claims or research.audience_signals
             else "Hedef kitle cümleleri daha belirgin olmalı.",
         ),
         evaluate_check(
             "positioning",
             "Konumlandırma içgörüsü",
             bool(research.positioning_signals),
-            "Positioning sinyalleri bulundu." if research.positioning_signals else "Konumlandırma sinyali zayıf.",
+            "Konumlandırma sinyalleri bulundu." if research.positioning_signals else "Konumlandırma sinyali zayıf.",
         ),
         evaluate_check(
             "trust_layer",
@@ -131,11 +126,27 @@ def infer_differentiation(research: ResearchPackage, analysis: dict[str, Any]) -
     return "Ayrıştırıcı unsur henüz tamamen net değil; ama teklif dili güçlendirildiğinde belirginleşebilir."
 
 
+def synthesize_positioning(research: ResearchPackage, analysis: dict[str, Any]) -> str:
+    if research.service_offers and research.product_offers:
+        return "Marka, hem özel çözüm geliştirme hem de ürün katmanını birlikte taşıyan hibrit bir teknoloji partneri gibi konumlanıyor."
+    if research.product_offers:
+        return "Marka, ürün ve platform odaklı bir dijital çözüm sağlayıcısı gibi konumlanıyor."
+    if research.service_offers:
+        return "Marka, hizmet ve çözüm ortağı ekseninde konumlanıyor."
+
+    offer = as_text(analysis.get("offer"))
+    if offer:
+        return offer
+
+    return "Markanın konumlandırması daha net bir ana teklif cümlesiyle güçlendirilmeli."
+
+
 def infer_primary_growth_lever(research: ResearchPackage, goals: list[str]) -> str:
-    if research.seo_signals and research.content_topics:
+    lead_topic = select_best_content_topic(research.content_topics)
+    if research.seo_signals and lead_topic:
         return (
             f"En güçlü kaldıraç, {goals[0]} odağında "
-            f"{research.content_topics[0]} etrafında içerik ve landing page otoritesi kurmak."
+            f"{lead_topic} etrafında içerik ve açılış sayfası otoritesi kurmak."
         )
     if research.conversion_actions:
         return f"En hızlı kaldıraç, dönüşüm akışını {research.conversion_actions[0].lower()} etrafında sadeleştirmek."
@@ -153,11 +164,18 @@ def infer_conversion_gap(research: ResearchPackage, bundle: CrawlBundle) -> str:
 
 
 def infer_content_angle(research: ResearchPackage, goals: list[str]) -> str:
-    if research.content_topics:
+    lead_topics = [topic for topic in (select_best_content_topic(research.content_topics), *research.content_topics[:4]) if topic]
+    if lead_topics:
+        unique_topics = []
+        for topic in lead_topics:
+            if topic not in unique_topics:
+                unique_topics.append(topic)
         return (
             f"{goals[0]} için en güçlü içerik açısı, "
-            f"{', '.join(research.content_topics[:3])} etrafında problem-çözüm anlatısı kurmak."
+            f"{', '.join(unique_topics[:3])} etrafında problem-çözüm anlatısı kurmak."
         )
+    if research.audience_claims:
+        return f"İçerikte en iyi açı, {research.audience_claims[0]} sinyalini ticari faydaya çevirmek."
     if research.audience_signals:
         return f"İçerikte en iyi açı, {research.audience_signals[0]} sinyalini ticari faydaya çevirmek."
     return "İçerikte en iyi açı, teklif netliğini ve güven kanıtlarını birlikte taşımak."
@@ -212,3 +230,17 @@ def as_text(value: Any) -> str:
 
 def word_count(value: str) -> int:
     return len([part for part in value.split() if part.strip()])
+
+
+def select_best_content_topic(topics: list[str]) -> str:
+    for topic in topics:
+        text = as_text(topic)
+        lowered = text.lower()
+        if not text:
+            continue
+        if any(marker in lowered for marker in ("selected", "devamını oku", "read more", "made with")):
+            continue
+        if len(text.split()) <= 1 and lowered not in {"seo", "geo", "aeo"}:
+            continue
+        return text
+    return ""

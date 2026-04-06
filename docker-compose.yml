@@ -23,7 +23,7 @@ services:
     env_file:
       - backend/.env
     environment:
-      FRONTEND_ORIGIN: http://127.0.0.1:5173
+      FRONTEND_ORIGIN: http://localhost:5173
       MONGODB_URI: mongodb://mongodb:27017
       MONGODB_DB_NAME: acrtech_ai_marketer
     ports:
@@ -46,29 +46,6 @@ services:
       retries: 10
       start_period: 20s
 
-  frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-    container_name: acrtech-frontend
-    restart: unless-stopped
-    env_file:
-      - .env.local
-    environment:
-      CHOKIDAR_USEPOLLING: "true"
-      WATCHPACK_POLLING: "true"
-      VITE_API_BASE_URL: http://127.0.0.1:8000
-    ports:
-      - "5173:5173"
-    depends_on:
-      backend:
-        condition: service_healthy
-    volumes:
-      - .:/app
-      - acrtech_frontend_node_modules:/app/node_modules
-
 volumes:
   acrtech_mongodb_data:
     name: acrtech_mongodb_data
-  acrtech_frontend_node_modules:
-    name: acrtech_frontend_node_modules

@@ -1,4 +1,4 @@
-import type { AnalyzeResponse, WorkspaceSnapshot } from '../types'
+import type { AnalyzeResponse, ChatMessageResponse, WorkspaceSnapshot } from '../types'
 import { auth } from './firebase'
 
 const API_BASE_URL =
@@ -84,4 +84,22 @@ export async function storeWorkspaceSnapshot(
 
     throw new Error(errorPayload?.detail || 'Workspace snapshot could not be stored.')
   }
+}
+
+export async function sendChatMessage(message: string): Promise<ChatMessageResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/chat-message`, {
+    method: 'POST',
+    headers: await buildAuthHeaders(true),
+    body: JSON.stringify({ message }),
+  })
+
+  if (!response.ok) {
+    const errorPayload = (await response.json().catch(() => null)) as
+      | { detail?: string }
+      | null
+
+    throw new Error(errorPayload?.detail || 'Chat message could not be sent.')
+  }
+
+  return (await response.json()) as ChatMessageResponse
 }
