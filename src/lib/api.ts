@@ -1,8 +1,7 @@
 import type { AnalyzeResponse, ChatMessageResponse, WorkspaceSnapshot } from '../types'
 import { auth } from './firebase'
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') || ''
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') || ''
 
 type AnalyzePayload = {
   website: string
@@ -13,7 +12,7 @@ type AnalyzePayload = {
 async function buildAuthHeaders(includeJson = false): Promise<Record<string, string>> {
   const user = auth.currentUser
   if (!user) {
-    throw new Error('Oturum bulunamadı. Lütfen tekrar giriş yap.')
+    throw new Error('Oturum bulunamadı. Lütfen tekrar giriş yapın.')
   }
 
   const token = await user.getIdToken()
@@ -28,9 +27,7 @@ async function buildAuthHeaders(includeJson = false): Promise<Record<string, str
   return headers
 }
 
-export async function analyzeWebsite(
-  payload: AnalyzePayload,
-): Promise<AnalyzeResponse> {
+export async function analyzeWebsite(payload: AnalyzePayload): Promise<AnalyzeResponse> {
   const response = await fetch(`${API_BASE_URL}/api/analyze`, {
     method: 'POST',
     headers: await buildAuthHeaders(true),
@@ -42,7 +39,7 @@ export async function analyzeWebsite(
       | { detail?: string }
       | null
 
-    throw new Error(errorPayload?.detail || 'Website analysis failed.')
+    throw new Error(errorPayload?.detail || 'Website analizi tamamlanamadı.')
   }
 
   return (await response.json()) as AnalyzeResponse
@@ -62,15 +59,13 @@ export async function fetchWorkspaceSnapshot(): Promise<WorkspaceSnapshot | null
       | { detail?: string }
       | null
 
-    throw new Error(errorPayload?.detail || 'Workspace snapshot could not be fetched.')
+    throw new Error(errorPayload?.detail || 'Çalışma alanı verisi alınamadı.')
   }
 
   return (await response.json()) as WorkspaceSnapshot
 }
 
-export async function storeWorkspaceSnapshot(
-  payload: WorkspaceSnapshot,
-): Promise<void> {
+export async function storeWorkspaceSnapshot(payload: WorkspaceSnapshot): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/workspace-snapshot`, {
     method: 'POST',
     headers: await buildAuthHeaders(true),
@@ -82,7 +77,7 @@ export async function storeWorkspaceSnapshot(
       | { detail?: string }
       | null
 
-    throw new Error(errorPayload?.detail || 'Workspace snapshot could not be stored.')
+    throw new Error(errorPayload?.detail || 'Çalışma alanı verisi kaydedilemedi.')
   }
 }
 
@@ -98,7 +93,7 @@ export async function sendChatMessage(message: string): Promise<ChatMessageRespo
       | { detail?: string }
       | null
 
-    throw new Error(errorPayload?.detail || 'Chat message could not be sent.')
+    throw new Error(errorPayload?.detail || 'Mesaj gönderilemedi.')
   }
 
   return (await response.json()) as ChatMessageResponse

@@ -118,6 +118,32 @@ Important backend env variables:
 - `MONGODB_URI`
 - `MONGODB_DB_NAME`
 
+## Vercel Frontend Deploy
+
+Bu repo Vercel tarafında sadece frontend deploy edecek şekilde hazırlandı.
+
+Gerekli dosyalar:
+
+- [vercel.json](C:/Users/acero/Documents/GitHub/ai-marketer/vercel.json)
+- [.vercelignore](C:/Users/acero/Documents/GitHub/ai-marketer/.vercelignore)
+
+Vercel ortam değişkenleri:
+
+- `VITE_FIREBASE_API_KEY`
+- `VITE_FIREBASE_AUTH_DOMAIN`
+- `VITE_FIREBASE_PROJECT_ID`
+- `VITE_FIREBASE_STORAGE_BUCKET`
+- `VITE_FIREBASE_MESSAGING_SENDER_ID`
+- `VITE_FIREBASE_APP_ID`
+- `VITE_FIREBASE_MEASUREMENT_ID`
+- `VITE_API_BASE_URL`
+
+Notlar:
+
+- `VITE_API_BASE_URL` Vercel'de canlı backend adresinize işaret etmelidir.
+- SPA yönlendirmeleri için tüm yollar `index.html`'e rewrite edilir.
+- `/basla`, `/hedefler`, `/baglantilar` ve `/calisma-alani` yolları doğrudan açıldığında frontend doğru ekranı yükler.
+
 ## Run
 
 Recommended:

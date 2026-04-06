@@ -1,0 +1,14 @@
+backend
+Scrapling-main
+awesome-design-md-main
+frontend
+development-files
+kısayollar
+dist
+node_modules
+.git
+.gitignore
+.dockerignore
+docker-compose.yml
+calistir.bat
+db-sifirla.bat

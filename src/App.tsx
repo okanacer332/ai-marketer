@@ -71,6 +71,26 @@ const EMPTY_CRAWL_META: CrawlMeta = {
   notes: [],
 }
 
+const STEP_PATHS: Record<Exclude<Step, 'signup'>, string> = {
+  specialist: '/',
+  website: '/basla',
+  goals: '/hedefler',
+  integrations: '/baglantilar',
+  workspace: '/calisma-alani',
+}
+
+function getStepFromPathname(pathname: string): Step {
+  const normalizedPath = pathname.replace(/\/+$/, '') || '/'
+
+  const matchedEntry = Object.entries(STEP_PATHS).find(([, path]) => path === normalizedPath)
+
+  if (!matchedEntry) {
+    return 'specialist'
+  }
+
+  return matchedEntry[0] as Step
+}
+
 function purgeLegacyWorkspaceStorage() {
   if (typeof window === 'undefined') {
     return
@@ -642,7 +662,9 @@ function buildSnapshotSignature(snapshot: WorkspaceSnapshot): string {
 }
 
 function App() {
-  const [step, setStep] = useState<Step>('specialist')
+  const [step, setStep] = useState<Step>(() =>
+    typeof window === 'undefined' ? 'specialist' : getStepFromPathname(window.location.pathname),
+  )
   const [selectedSpecialist, setSelectedSpecialist] = useState('aylin')
   const [authMode, setAuthMode] = useState<AuthMode>('signup')
   const [currentUser, setCurrentUser] = useState<User | null>(null)
@@ -743,15 +765,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    const stepRouteMap: Partial<Record<Step, string>> = {
-      specialist: '/',
-      website: '/basla',
-      goals: '/hedefler',
-      integrations: '/baglantilar',
-      workspace: '/calisma-alani',
-    }
-
-    const nextPath = stepRouteMap[step]
+    const nextPath = step === 'signup' ? STEP_PATHS.specialist : STEP_PATHS[step]
 
     if (!nextPath || typeof window === 'undefined') {
       return
@@ -763,6 +777,22 @@ function App() {
       window.history.replaceState({}, '', nextPath)
     }
   }, [step])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    const handlePopState = () => {
+      setStep(getStepFromPathname(window.location.pathname))
+    }
+
+    window.addEventListener('popstate', handlePopState)
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState)
+    }
+  }, [])
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
