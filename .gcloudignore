@@ -1,0 +1,16 @@
+.git
+.gitignore
+.vercel
+.vercelignore
+.dockerignore
+node_modules
+dist
+frontend
+awesome-design-md-main
+development-files
+kısayollar
+backend/.venv
+backend/data
+calistir.bat
+db-sifirla.bat
+docker-compose.yml

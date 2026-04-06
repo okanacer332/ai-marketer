@@ -3,13 +3,14 @@ import { getAnalytics, isSupported } from 'firebase/analytics'
 import { getAuth, GoogleAuthProvider, type Auth } from 'firebase/auth'
 
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyCHkKh3amAmHAXGiEHU0btPHaheOoZD9As',
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'ai-marketer-242f8.firebaseapp.com',
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'ai-marketer-242f8',
+  storageBucket:
+    import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || 'ai-marketer-242f8.firebasestorage.app',
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '497042168374',
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || '1:497042168374:web:7ff29012e80fb6b33bd697',
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || 'G-QXF69TEKET',
 }
 
 const requiredFirebaseFields = [

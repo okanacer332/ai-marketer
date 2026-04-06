@@ -1,7 +1,9 @@
 import type { AnalyzeResponse, ChatMessageResponse, WorkspaceSnapshot } from '../types'
 import { auth } from './firebase'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') || ''
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '') ||
+  'https://ai-marketer-backend-66765735737.europe-west1.run.app'
 
 type AnalyzePayload = {
   website: string

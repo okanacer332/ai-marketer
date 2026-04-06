@@ -66,8 +66,15 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     configure_observability()
-    ensure_indexes()
-    ensure_user_indexes()
+    try:
+        ensure_indexes()
+        ensure_user_indexes()
+    except Exception as exc:  # pragma: no cover - production startup resilience
+        log_structured(
+            "database_startup_warning",
+            level="error",
+            error=str(exc),
+        )
     log_structured("app_startup", version="0.4.0")
     yield
 

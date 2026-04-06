@@ -226,3 +226,28 @@ The `/api/ops/recent-events` endpoint:
 - `npm run lint`
 - `backend\\.venv\\Scripts\\python -m compileall backend\\app`
 - `docker compose config`
+
+## Cloud Run Backend Deploy
+
+Cloud Run için ayrı production dosyaları hazır:
+
+- `backend/Dockerfile.cloudrun`
+- `cloudbuild.cloudrun.yaml`
+- `cloudrun-deploy-backend.ps1`
+- `backend/.env.cloudrun.example`
+
+Önerilen düşük maliyetli ayarlar:
+
+- `region`: `europe-west1`
+- `cpu`: `1`
+- `memory`: `512Mi`
+- `min-instances`: `0`
+- `max-instances`: `1`
+- `concurrency`: `8`
+- `allow-unauthenticated`
+
+Notlar:
+
+- Cloud Run ücretsiz kullanım mantığı için `min-instances=0` tutulur.
+- MongoDB Atlas free cluster ile public bağlantı kullanılacaksa Atlas network erişimi buna göre açılmalıdır.
+- Gemini API maliyeti Cloud Run maliyetinden ayrıdır.
