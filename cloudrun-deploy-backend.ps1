@@ -58,15 +58,18 @@ if (-not $repoExists) {
     --substitutions "_IMAGE=$image"
 
 $envVars = @(
-    "GEMINI_API_KEY=$GeminiApiKey"
-    "GEMINI_MODEL=$GeminiModel"
-    "FRONTEND_ORIGIN=$FrontendOrigin"
-    "FRONTEND_ORIGINS=$FrontendOrigins"
-    "HTTP_VERIFY_SSL=true"
-    "MONGODB_URI=$MongoDbUri"
-    "MONGODB_DB_NAME=$MongoDbName"
-    "FIREBASE_PROJECT_ID=$FirebaseProjectId"
-) -join ","
+    "GEMINI_API_KEY: '$GeminiApiKey'"
+    "GEMINI_MODEL: '$GeminiModel'"
+    "FRONTEND_ORIGIN: '$FrontendOrigin'"
+    "FRONTEND_ORIGINS: '$FrontendOrigins'"
+    "HTTP_VERIFY_SSL: 'true'"
+    "MONGODB_URI: '$MongoDbUri'"
+    "MONGODB_DB_NAME: '$MongoDbName'"
+    "FIREBASE_PROJECT_ID: '$FirebaseProjectId'"
+) -join [Environment]::NewLine
+
+$envFile = Join-Path $env:TEMP "$ServiceName-cloudrun-env.yaml"
+Set-Content -LiteralPath $envFile -Value $envVars -Encoding UTF8
 
 & $GcloudPath run deploy $ServiceName `
     --project $ProjectId `
@@ -80,4 +83,6 @@ $envVars = @(
     --timeout 300 `
     --min-instances 0 `
     --max-instances 1 `
-    --set-env-vars $envVars
+    --env-vars-file $envFile
+
+Remove-Item -LiteralPath $envFile -Force -ErrorAction SilentlyContinue
