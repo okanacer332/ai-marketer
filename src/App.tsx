@@ -22,8 +22,13 @@ import {
 import { RevolutLanding } from './components/landing/RevolutLanding'
 import {
   analyzeWebsite,
+  analyzeGuestWebsite,
+  claimGuestWorkspace,
+  createGuestSession,
   fetchWorkspaceSnapshot,
+  fetchGuestWorkspaceSnapshot,
   sendChatMessage,
+  sendGuestChatMessage,
   storeWorkspaceSnapshot,
 } from './lib/api'
 import { auth, firebaseInitError, firebaseReady, googleProvider } from './lib/firebase'
@@ -56,6 +61,7 @@ type AuthMode = 'signup' | 'signin'
 
 const WORKSPACE_SNAPSHOT_PREFIX = 'acrtech-workspace:'
 const WORKSPACE_EMAIL_SNAPSHOT_PREFIX = 'acrtech-workspace-email:'
+const GUEST_SESSION_STORAGE_KEY = 'olric-guest-session-id'
 const CHAT_MESSAGE_LIMIT = 10
 const DEFAULT_GOALS = ['SEO', 'Sosyal Medya', 'Ücretli Reklamlar']
 const EMPTY_CRAWL_META: CrawlMeta = {
@@ -113,6 +119,34 @@ function purgeLegacyWorkspaceStorage() {
     keysToRemove.forEach((key) => window.localStorage.removeItem(key))
   } catch {
     // Ignore storage errors so the main flow keeps working.
+  }
+}
+
+function readStoredGuestSessionId() {
+  if (typeof window === 'undefined') {
+    return ''
+  }
+
+  try {
+    return window.localStorage.getItem(GUEST_SESSION_STORAGE_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+function writeStoredGuestSessionId(sessionId: string) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  try {
+    if (sessionId.trim()) {
+      window.localStorage.setItem(GUEST_SESSION_STORAGE_KEY, sessionId.trim())
+    } else {
+      window.localStorage.removeItem(GUEST_SESSION_STORAGE_KEY)
+    }
+  } catch {
+    // Ignore storage errors so guest flow can continue in-memory.
   }
 }
 
@@ -646,6 +680,16 @@ async function readWorkspaceSnapshot(
   }
 }
 
+async function readGuestWorkspaceSnapshot(
+  guestSessionId: string,
+): Promise<WorkspaceSnapshot | null> {
+  try {
+    return normalizeWorkspaceSnapshot(await fetchGuestWorkspaceSnapshot(guestSessionId))
+  } catch {
+    return null
+  }
+}
+
 async function writeWorkspaceSnapshot(
   snapshot: WorkspaceSnapshot,
 ) {
@@ -668,6 +712,7 @@ function App() {
   const [selectedSpecialist, setSelectedSpecialist] = useState('aylin')
   const [authMode, setAuthMode] = useState<AuthMode>('signup')
   const [currentUser, setCurrentUser] = useState<User | null>(null)
+  const [guestSessionId, setGuestSessionId] = useState(() => readStoredGuestSessionId())
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -703,8 +748,6 @@ function App() {
   const qualityReview = analysisResult?.qualityReview ?? null
   const chatThread = analysisResult?.chatThread ?? null
   const activeFile = memoryFiles.find((file) => file.id === activeFileId) || null
-  const progressSteps = ['signup', 'website', 'goals', 'integrations', 'workspace']
-  const currentProgressIndex = progressSteps.indexOf(step)
   const isWorkspace = step === 'workspace'
 
   function openAuthDialog(mode: AuthMode = 'signin') {
@@ -719,6 +762,33 @@ function App() {
     }
 
     setAuthDialogOpen(false)
+  }
+
+  async function ensureGuestSessionId() {
+    if (guestSessionId.trim()) {
+      return guestSessionId.trim()
+    }
+
+    const session = await createGuestSession()
+    const nextSessionId = session.guestSessionId.trim()
+    setGuestSessionId(nextSessionId)
+    writeStoredGuestSessionId(nextSessionId)
+    return nextSessionId
+  }
+
+  async function claimGuestWorkspaceIfNeeded() {
+    const activeGuestSessionId = guestSessionId.trim()
+    if (!activeGuestSessionId) {
+      return
+    }
+
+    try {
+      await claimGuestWorkspace(activeGuestSessionId)
+      setGuestSessionId('')
+      writeStoredGuestSessionId('')
+    } catch {
+      // Keep guest session if claim fails so the workspace is not lost.
+    }
   }
 
   const restoreWorkspace = useCallback((snapshot: WorkspaceSnapshot) => {
@@ -913,6 +983,35 @@ function App() {
     }
   }, [currentUser, isWorkspace, restoreWorkspace])
 
+  useEffect(() => {
+    if (
+      currentUser ||
+      !guestSessionId.trim() ||
+      isWorkspace ||
+      suppressAutoRestoreRef.current ||
+      hasAutoRestoredWorkspaceRef.current
+    ) {
+      return
+    }
+
+    let cancelled = false
+
+    void (async () => {
+      const snapshot = await readGuestWorkspaceSnapshot(guestSessionId)
+
+      if (!snapshot || cancelled) {
+        return
+      }
+
+      hasAutoRestoredWorkspaceRef.current = true
+      restoreWorkspace(snapshot)
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [currentUser, guestSessionId, isWorkspace, restoreWorkspace])
+
   function moveToStep(nextStep: Step) {
     setStep(nextStep)
   }
@@ -989,7 +1088,7 @@ function App() {
     setSelectedSpecialist(specialistId)
 
     if (!currentUser) {
-      openAuthDialog('signup')
+      moveToStep('website')
       return
     }
 
@@ -1014,6 +1113,7 @@ function App() {
 
     try {
       await signInWithPopup(auth, googleProvider)
+      await claimGuestWorkspaceIfNeeded()
       setAuthDialogOpen(false)
       await continueAuthenticatedFlow()
     } catch (error) {
@@ -1065,6 +1165,7 @@ function App() {
       }
 
       suppressAutoRestoreRef.current = false
+      await claimGuestWorkspaceIfNeeded()
       setAuthDialogOpen(false)
       await continueAuthenticatedFlow()
     } catch (error) {
@@ -1080,13 +1181,16 @@ function App() {
     }
 
     setWebsite(normalizeWebsite(website))
-    moveToStep('goals')
+    void enterWorkspace()
   }
 
   async function enterWorkspace() {
     if (!website.trim()) {
       return
     }
+
+    const normalizedSource = normalizeWebsite(website)
+    setWebsite(normalizedSource)
 
     const runId = analysisRunRef.current + 1
     analysisRunRef.current = runId
@@ -1104,11 +1208,20 @@ function App() {
     moveToStep('workspace')
 
     try {
-      const result = await analyzeWebsite({
-        website: normalizeWebsite(website),
-        goals: selectedGoals,
-        connectedPlatforms,
-      })
+      const result = currentUser
+        ? await analyzeWebsite({
+            website: normalizedSource,
+            goals: selectedGoals,
+            connectedPlatforms,
+          })
+        : await analyzeGuestWebsite(
+            {
+              website: normalizedSource,
+              goals: selectedGoals,
+              connectedPlatforms,
+            },
+            await ensureGuestSessionId(),
+          )
       const normalizedResult = normalizeAnalyzeResponse(result)
 
       if (analysisRunRef.current !== runId) {
@@ -1116,12 +1229,12 @@ function App() {
       }
 
       if (!normalizedResult) {
-        throw new Error('Analiz Ã§Ä±ktÄ±sÄ± beklenen formatta gelmedi.')
+        throw new Error('Analiz çıktısı beklenen formatta gelmedi.')
       }
 
       if (currentUser) {
         const snapshot = normalizeWorkspaceSnapshot({
-          website: normalizeWebsite(website),
+          website: normalizedSource,
           selectedGoals,
           connectedPlatforms,
           analysisResult: normalizedResult,
@@ -1143,7 +1256,7 @@ function App() {
 
       setAnalysisPhase(4)
       setAnalysisError(
-        error instanceof Error ? error.message : 'Website analizi baÅŸarÄ±sÄ±z oldu.',
+        error instanceof Error ? error.message : 'Website analizi başarısız oldu.',
       )
     } finally {
       if (analysisRunRef.current === runId) {
@@ -1209,7 +1322,7 @@ function App() {
     }
 
     if (chatRemainingMessages <= 0) {
-      setChatError(`Bu oturum iÃ§in maksimum ${CHAT_MESSAGE_LIMIT} mesaj hakkÄ± doldu.`)
+      setChatError(`Bu oturum için maksimum ${CHAT_MESSAGE_LIMIT} mesaj hakkı doldu.`)
       return
     }
 
@@ -1219,9 +1332,13 @@ function App() {
     setChatDraft('')
 
     try {
-      const response = normalizeChatMessageResponse(await sendChatMessage(trimmedMessage))
+      const response = normalizeChatMessageResponse(
+        currentUser
+          ? await sendChatMessage(trimmedMessage)
+          : await sendGuestChatMessage(trimmedMessage, await ensureGuestSessionId()),
+      )
       if (!response) {
-        throw new Error('Sohbet yanÄ±tÄ± beklenen formatta gelmedi.')
+        throw new Error('Sohbet yanıtı beklenen formatta gelmedi.')
       }
 
       setAnalysisResult((current) => {
@@ -1238,7 +1355,7 @@ function App() {
       setPendingChatMessage(null)
     } catch (error) {
       setChatError(
-        error instanceof Error ? error.message : 'Sohbet mesajÄ± gÃ¶nderilemedi.',
+        error instanceof Error ? error.message : 'Sohbet mesajı gönderilemedi.',
       )
       setPendingChatMessage(null)
       setChatDraft(trimmedMessage)
@@ -1256,39 +1373,21 @@ function App() {
       {!isWorkspace && step !== 'specialist' ? (
         <header className="app-header">
           <div className="brand-lockup">
-            <div className="brand-mark">A</div>
             <div>
-              <p className="brand-name">Acrtech</p>
-              <p className="brand-subtitle">AI Marketer</p>
+              <p className="brand-name">Olric.</p>
+              <p className="brand-subtitle">Bağlantıyı girin, ilk analizi dakikalar içinde açalım.</p>
             </div>
           </div>
 
-          {currentProgressIndex >= 0 ? (
-            <div className="step-strip" aria-label="Onboarding ilerlemesi">
-              {progressSteps.map((progressStep, index) => {
-                const isActive = progressStep === step
-                const isComplete = currentProgressIndex > index
-
-                return (
-                  <span
-                    key={progressStep}
-                    className={`step-pill ${isActive ? 'active' : ''} ${isComplete ? 'complete' : ''}`}
-                  >
-                    {index + 1}
-                  </span>
-                )
-              })}
-            </div>
-          ) : (
-            <p className="header-caption">
-              Karmaşık panel yok. Markanızı anlayan tek bir çalışma katmanı var.
-            </p>
-          )}
+          <p className="header-caption">
+            Website ya da herkese açık sosyal medya profilini girin. Olric misafir olarak içeri alır
+            ve çalışma alanını anında oluşturur.
+          </p>
 
           <div className="header-actions">
             {currentUser ? (
               <div className="user-chip">
-                <span>{currentUser.displayName || currentUser.email || 'Giriş açık'}</span>
+                <span>{currentUser.displayName || currentUser.email || 'Oturum açık'}</span>
                 <button
                   type="button"
                   className="ghost-button compact-button"
@@ -1297,15 +1396,19 @@ function App() {
                   Çıkış yap
                 </button>
               </div>
-            ) : null}
-
+            ) : (
               <button
                 type="button"
-                className="ghost-button"
-                onClick={handleBack}
+                className="ghost-button compact-button"
+                onClick={() => openAuthDialog('signin')}
               >
-                Geri
+                Giriş yap
               </button>
+            )}
+
+            <button type="button" className="ghost-button" onClick={handleBack}>
+              Geri
+            </button>
           </div>
         </header>
       ) : null}
@@ -1398,7 +1501,7 @@ function App() {
                       Adınız
                       <input
                         type="text"
-                        placeholder="Aylin size adınızla hitap etsin"
+                        placeholder="Olric size adınızla hitap etsin"
                         value={name}
                         onChange={(event) => setName(event.target.value)}
                       />
@@ -1455,7 +1558,7 @@ function App() {
 
             <div className="visual-card">
               <p className="mini-label">Bu yapının farkı</p>
-              <h2>Aylin karar sürecini görünür kılar.</h2>
+              <h2>Olric karar sürecini görünür kılar.</h2>
               <p>
                 Boş bir yükleme ekranı yerine ne yaptığını anlatır, hafıza dosyalarını oluşturur
                 ve sonraki kararları hangi mantıkla verdiğini açık biçimde gösterir.
@@ -1467,32 +1570,38 @@ function App() {
 
       {step === 'website' ? (
         <section className="screen centered-screen">
-          <div className="focus-card">
-            <p className="eyebrow">{currentSpecialist.name} ile başla</p>
-            <h1>Website adresini girin, analiz başlasın.</h1>
+          <div className="focus-card source-entry-card">
+            <p className="eyebrow">Olric ile başla</p>
+            <h1>Website veya sosyal medya bağlantısını girin.</h1>
             <p className="lede compact">
-              Siteyi inceler, önemli sayfaları tarar ve bulguları doğrudan çalışma dosyalarına
-              dönüştürür.
+              Website, herkese açık bir Instagram profili, LinkedIn sayfası ya da tekil bir içerik
+              bağlantısı olabilir. Olric kaynağı tarar, hafıza dosyalarını üretir ve sizi doğrudan
+              çalışma alanına alır.
             </p>
 
-            <label className="website-field">
-              Web sitesi
+            <div className="source-search-shell">
               <input
                 type="url"
-                placeholder="https://sirketiniz.com"
+                className="source-search-input"
+                placeholder="https://markaniz.com veya https://instagram.com/kullaniciadi"
                 value={website}
                 onChange={(event) => setWebsite(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && website.trim()) {
+                    event.preventDefault()
+                    handleWebsiteContinue()
+                  }
+                }}
               />
-            </label>
-
-            <button
-              type="button"
-              className="primary-button wide-button"
-              disabled={!website.trim()}
-              onClick={handleWebsiteContinue}
-            >
-              Devam et
-            </button>
+              <button
+                type="button"
+                className="primary-button source-search-button"
+                disabled={!website.trim()}
+                onClick={handleWebsiteContinue}
+              >
+                Olric ile başlayın
+              </button>
+            </div>
           </div>
         </section>
       ) : null}
@@ -1528,8 +1637,10 @@ function App() {
           chatPending={chatPending}
           chatRemainingMessages={chatRemainingMessages}
           currentSpecialist={currentSpecialist}
+          isGuest={!currentUser}
           chatThread={chatThread}
           memoryFiles={memoryFiles}
+          onOpenAuth={() => openAuthDialog('signin')}
           onChatDraftChange={setChatDraft}
           onChatSubmit={() => {
             void handleChatSubmit()
@@ -1544,7 +1655,7 @@ function App() {
           selectedGoals={selectedGoals}
           strategicSummary={strategicSummary}
           trialActivated={trialActivated}
-          userLabel={currentUser?.displayName || currentUser?.email || 'KullanÄ±cÄ±'}
+          userLabel={currentUser?.displayName || currentUser?.email || 'Misafir'}
           website={website}
         />
       ) : null}
@@ -1750,7 +1861,7 @@ function readFirebaseError(error: unknown) {
   }
 
   if (code.includes('email-already-in-use')) {
-    return 'Bu e-posta zaten kayıtlı. Giriş yap seçeneğini kullanın.'
+    return 'Bu e-posta zaten kayıtlı. Aynı bilgilerle devam edin.'
   }
 
   if (code.includes('weak-password')) {
@@ -1774,10 +1885,10 @@ function GoalsStep({ selectedGoals, onToggle, onContinue }: GoalsStepProps) {
   return (
     <section className="screen centered-screen">
       <div className="focus-card large-card">
-        <p className="eyebrow">Aylin’in odağını belirleyin</p>
+        <p className="eyebrow">Olric’in odağını belirleyin</p>
         <h1>Hangi alanlarda destek istiyorsunuz?</h1>
         <p className="lede compact">
-          Birini ya da birkaçını seçin. Aylin bu sinyalleri analiz kapsamını ve ilk ay planını
+          Birini ya da birkaçını seçin. Olric bu sinyalleri analiz kapsamını ve ilk ay planını
           ağırlıklandırmak için kullanacak.
         </p>
 
@@ -1826,7 +1937,7 @@ function IntegrationsStep({
         <p className="eyebrow">Opsiyonel bağlantılar</p>
         <h1>Platformlarınızı bağlayın</h1>
         <p className="lede compact">
-          Bu hesaplar Aylin’in daha hızlı ilerlemesini sağlar. İsterseniz şimdilik atlayıp yalnızca
+          Bu hesaplar Olric’in daha hızlı ilerlemesini sağlar. İsterseniz şimdilik atlayıp yalnızca
           website verisiyle de başlayabilirsiniz.
         </p>
 
@@ -2075,7 +2186,9 @@ type WorkspaceStepProps = {
   chatRemainingMessages: number
   chatThread: ChatThread | null
   currentSpecialist: (typeof specialists)[number]
+  isGuest: boolean
   memoryFiles: MemoryFile[]
+  onOpenAuth: () => void
   onChatDraftChange: (value: string) => void
   onChatSubmit: () => void
   qualityReview: QualityReview | null
@@ -2103,7 +2216,9 @@ function WorkspaceStep({
   chatRemainingMessages,
   chatThread,
   currentSpecialist,
+  isGuest,
   memoryFiles,
+  onOpenAuth,
   onChatDraftChange,
   onChatSubmit,
   qualityReview,
@@ -2132,17 +2247,17 @@ function WorkspaceStep({
     .join('')
     .toUpperCase()
   const workspaceTitle = trialActivated
-    ? 'Aylin aktif'
+    ? 'Olric aktif'
     : analysisPending
-      ? 'CanlÄ± analiz'
+      ? 'Canlı analiz'
       : analysisError
         ? 'Analiz durduruldu'
-        : 'Analiz tamamlandÄ±'
+        : 'Analiz tamamlandı'
   const specialistAvatar = currentSpecialist.avatar
   const visibleFilePreviews = memoryFiles.slice(0, 4)
   const threadMessages = chatThread?.messages ?? []
   const isChatLocked = chatRemainingMessages <= 0
-  const historyTitle = chatThread?.title || `${analysis.companyName} iÃ§in ilk analiz`
+  const historyTitle = chatThread?.title || `${analysis.companyName} için ilk analiz`
   const [dismissedLogoUrl, setDismissedLogoUrl] = useState<string | null>(null)
   const [expandedInlineFileId, setExpandedInlineFileId] = useState<string | null | undefined>(undefined)
   const [copiedFileId, setCopiedFileId] = useState<string | null>(null)
@@ -2162,28 +2277,28 @@ function WorkspaceStep({
     {
       id: 'business-profile',
       filename: 'business-profile.md',
-      title: `${analysis.companyName} â€” Ä°ÅŸletme Profili`,
-      blurb: 'Åirketin teklif yapÄ±sÄ±, hedef kitlesi ve iÅŸ modeli netleÅŸtiriliyor.',
+      title: `${analysis.companyName} — İşletme Profili`,
+      blurb: 'Şirketin teklif yapısı, hedef kitlesi ve iş modeli netleştiriliyor.',
     },
     {
       id: 'brand-guidelines',
       filename: 'brand-guidelines.md',
-      title: `${analysis.companyName} â€” Marka KÄ±lavuzu`,
-      blurb: 'GÃ¶rsel kimlik, ton ve ana mesaj sÃ¼tunlarÄ± Ã§alÄ±ÅŸma alanÄ±na kaydediliyor.',
+      title: `${analysis.companyName} — Marka Kılavuzu`,
+      blurb: 'Görsel kimlik, ton ve ana mesaj sütunları çalışma alanına kaydediliyor.',
     },
   ])
   const liveSecondaryAttachments = buildLiveMemoryAttachments(memoryFiles, 2, 4, [
     {
       id: 'market-research',
       filename: 'market-research.md',
-      title: `${analysis.companyName} â€” Pazar AraÅŸtÄ±rmasÄ±`,
-      blurb: 'Kategori, rekabet ve bÃ¼yÃ¼me fÄ±rsatlarÄ± ikinci dalga dosyalara ekleniyor.',
+      title: `${analysis.companyName} — Pazar Araştırması`,
+      blurb: 'Kategori, rekabet ve büyüme fırsatları ikinci dalga dosyalara ekleniyor.',
     },
     {
       id: 'strategy',
       filename: 'strategy.md',
-      title: `${analysis.companyName} â€” Pazarlama Stratejisi`,
-      blurb: 'Ä°lk 30 gÃ¼nÃ¼n Ã¶ncelikleri ve bÃ¼yÃ¼me kaldÄ±raÃ§larÄ± strateji dosyasÄ±na yazÄ±lÄ±yor.',
+      title: `${analysis.companyName} — Pazarlama Stratejisi`,
+      blurb: 'İlk 30 günün öncelikleri ve büyüme kaldıraçları strateji dosyasına yazılıyor.',
     },
   ])
   const resolvedExpandedInlineFileId =
@@ -2195,42 +2310,42 @@ function WorkspaceStep({
   const knowledgeFiles = showAllKnowledgeFiles ? memoryFiles : memoryFiles.slice(0, 2)
   const firstWorkflowNotes = [
     {
-      title: 'Ä°Ã§eriÄŸi inceliyorum',
-      detail: 'Ana sayfa, hizmetler ve teklif yapÄ±sÄ±nÄ± tek bir akÄ±ÅŸta toparlÄ±yorum.',
+      title: 'Kaynağı inceliyorum',
+      detail: 'Sayfaları, profil yapısını ve teklif dilini tek bir akışta toparlıyorum.',
     },
     {
-      title: 'Marka sinyallerini Ã§Ä±karÄ±yorum',
-      detail: 'Dil, konumlandÄ±rma ve gÃ¼ven katmanlarÄ±nÄ± ilk Ã§erÃ§eveye yerleÅŸtiriyorum.',
+      title: 'Marka sinyallerini çıkarıyorum',
+      detail: 'Dil, konumlandırma ve güven katmanlarını ilk çerçeveye yerleştiriyorum.',
     },
     {
-      title: 'Ä°lk dosyalarÄ± hazÄ±rlÄ±yorum',
-      detail: 'Ä°ÅŸletme profili ve marka kÄ±lavuzu iÃ§in temel iskeleti kuruyorum.',
+      title: 'İlk dosyaları hazırlıyorum',
+      detail: 'İşletme profili ve marka kılavuzu için temel iskeleti kuruyorum.',
     },
   ]
   const firstDropNotes = [
     {
-      title: 'Teklif yapÄ±sÄ±nÄ± netliyorum',
-      detail: 'Hizmetleri, Ã¼rÃ¼nleri ve hedef kitleyi ortak bir profilde birleÅŸtiriyorum.',
+      title: 'Teklif yapısını netliyorum',
+      detail: 'Hizmetleri, ürünleri ve hedef kitleyi ortak bir profilde birleştiriyorum.',
     },
     {
       title: 'Marka dilini sabitliyorum',
-      detail: 'Renk, ton ve CTA yapÄ±sÄ±nÄ± marka kÄ±lavuzuna iÅŸliyorum.',
+      detail: 'Renk, ton ve CTA yapısını marka kılavuzuna işliyorum.',
     },
   ]
   const secondDropNotes = [
     {
-      title: 'PazarÄ± tarÄ±yorum',
-      detail: 'Kategori fÄ±rsatlarÄ±nÄ±, iÃ§erik boÅŸluklarÄ±nÄ± ve rekabet sinyallerini ayÄ±klÄ±yorum.',
+      title: 'Pazarı tarıyorum',
+      detail: 'Kategori fırsatlarını, içerik boşluklarını ve rekabet sinyallerini ayıklıyorum.',
     },
     {
-      title: 'Ä°lk yol haritasÄ±nÄ± yazÄ±yorum',
-      detail: 'Ä°lk 30 gÃ¼n iÃ§in uygulanabilir bÃ¼yÃ¼me adÄ±mlarÄ±nÄ± strateji dosyasÄ±na aktarÄ±yorum.',
+      title: 'İlk yol haritasını yazıyorum',
+      detail: 'İlk 30 gün için uygulanabilir büyüme adımlarını strateji dosyasına aktarıyorum.',
     },
   ]
   const requestedTopics =
     selectedGoals.length > 0
       ? selectedGoals.join(', ')
-      : 'Sosyal Medya, E-posta PazarlamasÄ±, Ãœcretli Reklamlar, SEO, Ä°Ã§erik YazÄ±mÄ±'
+      : 'Sosyal Medya, E-posta Pazarlaması, Ücretli Reklamlar, SEO, İçerik Yazımı'
   const shouldShowTrialCta =
     !analysisPending &&
     !analysisError &&
@@ -2340,7 +2455,7 @@ function WorkspaceStep({
       <div className="assistant-chat-row">
         <img
           src={specialistAvatar}
-          alt={`${currentSpecialist.name} avatarÄ±`}
+          alt={`${currentSpecialist.name} avatarı`}
           className="assistant-chat-avatar"
         />
         <article className={`chat-message assistant-message ${className}`.trim()}>
@@ -2357,7 +2472,7 @@ function WorkspaceStep({
         <article className="chat-message user-message">
           {renderMessageMeta(userLabel)}
           <p>
-            Web sitemiz "{normalizeWebsite(website)}" {requestedTopics} konularÄ±nda bana yardÄ±mcÄ±
+            Kaynağımız "{normalizeWebsite(website)}". {requestedTopics} konularında bize yardımcı
             olabilir misiniz?
           </p>
         </article>
@@ -2447,8 +2562,8 @@ function WorkspaceStep({
         return {
           id: attachment.fileId || attachment.id || attachment.filename,
           filename: attachment.filename || 'memory-file.md',
-          title: attachment.title || attachment.filename || 'HafÄ±za dosyasÄ±',
-          blurb: attachment.blurb || attachment.title || 'Dosya hazÄ±rlanÄ±yor.',
+          title: attachment.title || attachment.filename || 'Hafıza dosyası',
+          blurb: attachment.blurb || attachment.title || 'Dosya hazırlanıyor.',
           content: '',
           version: attachment.version ?? null,
           isCurrent: attachment.isCurrent ?? true,
@@ -2491,7 +2606,7 @@ function WorkspaceStep({
                   <span className="report-card-kind">Dosya</span>
                 </div>
                 <span className={`report-card-status ${file.isPlaceholder ? 'pending' : ''}`}>
-                  {file.isPlaceholder ? 'SÄ±rada' : file.version ? `v${file.version}` : 'Kaydedildi'}
+                  {file.isPlaceholder ? 'Sırada' : file.version ? `v${file.version}` : 'Kaydedildi'}
                 </span>
               </div>
               {isExpanded ? (
@@ -2503,7 +2618,7 @@ function WorkspaceStep({
               )}
               <div className="report-card-actions">
                 {file.isPlaceholder ? (
-                  <span className="report-card-note">Ä°Ã§erik tamamlanÄ±nca belgeyi aÃ§abileceksin.</span>
+                  <span className="report-card-note">İçerik tamamlanınca belgeyi açabileceksin.</span>
                 ) : (
                   <>
                     <button
@@ -2511,7 +2626,7 @@ function WorkspaceStep({
                       className="ghost-button compact-button"
                       onClick={() => setExpandedInlineFileId(isExpanded ? null : file.id)}
                     >
-                      {isExpanded ? 'Daralt' : 'GeniÅŸlet'}
+                      {isExpanded ? 'Daralt' : 'Genişlet'}
                     </button>
                     <button
                       type="button"
@@ -2535,7 +2650,7 @@ function WorkspaceStep({
                         })
                       }
                     >
-                      {copiedFileId === file.id ? 'âœ“ KopyalandÄ±' : 'Kopyala'}
+                      {copiedFileId === file.id ? '✓ Kopyalandı' : 'Kopyala'}
                     </button>
                   </>
                 )}
@@ -2551,16 +2666,16 @@ function WorkspaceStep({
     return (
       <div className="cta-panel">
         <div>
-          <p className="mini-label">HazÄ±r olduÄŸunda</p>
-          <h2>Aylin'i iÅŸe al</h2>
+          <p className="mini-label">Hazır olduğunda</p>
+          <h2>Olric’i etkinleştir</h2>
           <p>
-            3 gÃ¼nlÃ¼k Ã¼cretsiz deneme. HafÄ±za dosyalarÄ±, strateji ve operasyon ritmi
-            sende kalsÄ±n.
+            3 günlük ücretsiz deneme. Hafıza dosyaları, strateji ve operasyon ritmi
+            sende kalsın.
           </p>
         </div>
 
         <button type="button" className="primary-button" onClick={onActivateTrial}>
-          {trialActivated ? 'Deneme aktif' : "Aylin'i iÅŸe al"}
+          {trialActivated ? 'Deneme aktif' : 'Olric’i etkinleştir'}
         </button>
       </div>
     )
@@ -2589,10 +2704,10 @@ function WorkspaceStep({
     return renderAssistantMessage(
       <div className="typing-indicator">
         <div className="typing-indicator-copy">
-          <strong>Aylin yazÄ±yor</strong>
-          <p>MesajÄ±nÄ± mevcut analiz ve hafÄ±za dosyalarÄ±yla birlikte yorumluyorum.</p>
+          <strong>Olric yazıyor</strong>
+          <p>Mesajını mevcut analiz ve hafıza dosyalarıyla birlikte yorumluyorum.</p>
         </div>
-        <div className="typing-dots" aria-label="YazÄ±yor">
+        <div className="typing-dots" aria-label="Yazıyor">
           <span></span>
           <span></span>
           <span></span>
@@ -2649,14 +2764,14 @@ function WorkspaceStep({
 
   function renderLiveThread() {
     const finalSummaryLines = [
-      'DosyalarÄ± kaydettim.',
+      'Dosyaları kaydettim.',
       analysis.opportunity
-        ? `Ã–ne Ã§Ä±kan bÃ¼yÃ¼me fÄ±rsatÄ±: ${analysis.opportunity}`
+        ? `Öne çıkan büyüme fırsatı: ${analysis.opportunity}`
         : strategicSummary?.primaryGrowthLever
-          ? `Ã–ne Ã§Ä±kan bÃ¼yÃ¼me fÄ±rsatÄ±: ${strategicSummary.primaryGrowthLever}`
+          ? `Öne çıkan büyüme fırsatı: ${strategicSummary.primaryGrowthLever}`
           : '',
       qualityReview?.score
-        ? `Analiz kapsam puanÄ± ÅŸu anda ${qualityReview.score}/100.`
+        ? `Analiz kapsam puanı şu anda ${qualityReview.score}/100.`
         : '',
     ].filter(Boolean)
 
@@ -2664,7 +2779,7 @@ function WorkspaceStep({
       <>
         {renderAssistantMessage(
           <p>
-            Web sitenizi inceleyelim ve pazarlama temellerinizi oluÅŸturmaya baÅŸlayalÄ±m.
+            Kaynağı inceleyip ilk pazarlama temelini oluşturmaya başlıyorum.
           </p>,
         )}
 
@@ -2675,11 +2790,11 @@ function WorkspaceStep({
         {analysisPhase >= 2 ? (
           renderAssistantMessage(
             <p>
-              Ä°lk gÃ¶rÃ¼nÃ¼m gÃ¼Ã§lÃ¼. {analysis.companyName},{' '}
-              {strategicSummary?.positioning || analysis.offer} etrafÄ±nda
-              konumlanÄ±yor gibi gÃ¶rÃ¼nÃ¼yor. En olasÄ± hedef kitlen{' '}
-              {strategicSummary?.bestFitAudience || analysis.audience} ve ayÄ±rÄ±cÄ±
-              Ã§izgi {strategicSummary?.differentiation || analysis.tone}.
+              İlk görünüm güçlü. {analysis.companyName},{' '}
+              {strategicSummary?.positioning || analysis.offer} etrafında
+              konumlanıyor gibi görünüyor. En olası hedef kitle{' '}
+              {strategicSummary?.bestFitAudience || analysis.audience} ve ayrışan
+              çizgi {strategicSummary?.differentiation || analysis.tone}.
             </p>,
           )
         ) : null}
@@ -2687,7 +2802,7 @@ function WorkspaceStep({
         {analysisPhase >= 3 && !analysisError ? (
           <div>
             {renderAssistantMessage(
-              <p>Ã–nce iÅŸletme profili ve marka kÄ±lavuzunu oluÅŸturmaya baÅŸlÄ±yorum.</p>,
+              <p>Önce işletme profili ve marka kılavuzunu oluşturmaya başlıyorum.</p>,
             )}
             {renderWorkflowNotes(firstDropNotes, Math.min(Math.max(analysisPhase - 2, 1), firstDropNotes.length))}
             {renderMemoryCards(livePrimaryAttachments)}
@@ -2697,11 +2812,11 @@ function WorkspaceStep({
         {analysisPhase >= 5 && !analysisError ? (
           renderAssistantMessage(
             <p>
-              Åimdi biraz daha derine iniyorum. En gÃ¼Ã§lÃ¼ kaldÄ±raÃ§{' '}
-              {strategicSummary?.primaryGrowthLever || analysis.opportunity} Ã§izgisinde
-              gÃ¶rÃ¼nÃ¼yor. Ä°Ã§erik aÃ§Ä±sÄ±ndan ise{' '}
-              {strategicSummary?.contentAngle || 'daha gÃ¼Ã§lÃ¼ bir konu kÃ¼melenmesi'}
-              Ã¶ne Ã§Ä±kÄ±yor.
+              Şimdi biraz daha derine iniyorum. En güçlü kaldıraç{' '}
+              {strategicSummary?.primaryGrowthLever || analysis.opportunity} çizgisinde
+              görünüyor. İçerik açısından ise{' '}
+              {strategicSummary?.contentAngle || 'daha güçlü bir konu kümelenmesi'}
+              öne çıkıyor.
             </p>,
           )
         ) : null}
@@ -2709,7 +2824,7 @@ function WorkspaceStep({
         {analysisPhase >= 6 && !analysisError ? (
           <div>
             {renderAssistantMessage(
-              <p>Åimdi pazar araÅŸtÄ±rmasÄ± ve strateji dosyalarÄ±nÄ± netleÅŸtiriyorum.</p>,
+              <p>Şimdi pazar araştırması ve strateji dosyalarını netleştiriyorum.</p>,
             )}
             {renderWorkflowNotes(secondDropNotes, Math.min(Math.max(analysisPhase - 5, 1), secondDropNotes.length))}
             {renderMemoryCards(liveSecondaryAttachments)}
@@ -2745,10 +2860,10 @@ function WorkspaceStep({
           </div>
           <div className="workspace-brand-copy">
             <h2>{analysis.companyName}</h2>
-            <p className="workspace-subtle">{currentSpecialist.name} Ã§alÄ±ÅŸma alanÄ±</p>
+            <p className="workspace-subtle">Olric çalışma alanı</p>
           </div>
-          <button type="button" className="workspace-brand-toggle" aria-label="MenÃ¼yÃ¼ daralt">
-            â€¹
+          <button type="button" className="workspace-brand-toggle" aria-label="Menüyü daralt">
+            ‹
           </button>
         </div>
 
@@ -2777,35 +2892,35 @@ function WorkspaceStep({
           <button type="button" className="dm-card">
             <img
               src={specialistAvatar}
-              alt={`${currentSpecialist.name} avatarÄ±`}
+              alt={`${currentSpecialist.name} avatarı`}
               className="dm-avatar-image"
             />
             <span>
               <strong>{currentSpecialist.name}</strong>
-              <small>AI Dijital PazarlamacÄ±</small>
+              <small>Otonom pazarlama asistanı</small>
             </span>
           </button>
         </div>
 
         <div className="sidebar-group">
-          <p className="sidebar-heading">Sohbet GeÃ§miÅŸi</p>
+          <p className="sidebar-heading">Sohbet Geçmişi</p>
           <label className="sidebar-search">
-            <span>âŒ•</span>
-            <input type="text" value="" readOnly placeholder="KonuÅŸmalarda ara..." />
+            <span>⌕</span>
+            <input type="text" value="" readOnly placeholder="Konuşmalarda ara..." />
           </label>
           <button type="button" className="history-card">
             <img
               src={specialistAvatar}
-              alt={`${currentSpecialist.name} avatarÄ±`}
+              alt={`${currentSpecialist.name} avatarı`}
               className="dm-avatar-image subtle"
             />
             <span>
               <strong>{historyTitle}</strong>
-              <small>{selectedGoals.slice(0, 2).join(' â€¢ ') || 'BaÅŸlangÄ±Ã§ oturumu'}</small>
+              <small>{selectedGoals.slice(0, 2).join(' • ') || 'Başlangıç oturumu'}</small>
             </span>
           </button>
           <button type="button" className="history-link">
-            TÃ¼m konuÅŸmalarÄ± gÃ¶r
+            Tüm konuşmaları gör
           </button>
         </div>
 
@@ -2820,24 +2935,28 @@ function WorkspaceStep({
             Entegrasyonlar
           </button>
           <button type="button" className="sidebar-link">
-            PaylaÅŸ & Kazan
+            Paylaş & Kazan
           </button>
           <button type="button" className="sidebar-link">
-            Bize UlaÅŸ
+            Bize Ulaş
           </button>
         </nav>
 
         <div className="sidebar-footer">
           <div className="workspace-user-row">
-            <span className="workspace-user-dot">A</span>
+            <span className="workspace-user-dot">O</span>
             <span>{userLabel}</span>
           </div>
           <div className="workspace-footer-actions">
             <button type="button" className="ghost-button compact-button" onClick={onRestart}>
-              BaÅŸtan baÅŸla
+              Baştan başla
             </button>
-            <button type="button" className="ghost-button compact-button" onClick={onSignOut}>
-              Ã‡Ä±kÄ±ÅŸ yap
+            <button
+              type="button"
+              className="ghost-button compact-button"
+              onClick={isGuest ? onOpenAuth : onSignOut}
+            >
+              {isGuest ? 'Giriş yap' : 'Çıkış yap'}
             </button>
           </div>
         </div>
@@ -2855,15 +2974,22 @@ function WorkspaceStep({
             <h1>{analysis.companyName}</h1>
           </div>
 
-          <div className="status-badge">
-            <span className="status-dot"></span>
-            <span>
-              {analysisPending
-                ? 'Analiz sÃ¼rÃ¼yor'
-                : analysisError
-                  ? 'Tekrar denenmeli'
-                  : 'HazÄ±r'}
-            </span>
+          <div className="panel-header-actions">
+            {isGuest ? (
+              <button type="button" className="ghost-button compact-button" onClick={onOpenAuth}>
+                Giriş yap
+              </button>
+            ) : null}
+            <div className="status-badge">
+              <span className="status-dot"></span>
+              <span>
+                {analysisPending
+                  ? 'Analiz sürüyor'
+                  : analysisError
+                    ? 'Tekrar denenmeli'
+                    : 'Hazır'}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -2889,7 +3015,7 @@ function WorkspaceStep({
       <aside className="insight-panel">
         <div className="insight-card knowledge-bank-card">
           <div className="side-section-heading">
-            <p className="mini-label">Marka Bilgi BankasÄ±</p>
+            <p className="mini-label">Marka Bilgi Bankası</p>
             <span>{memoryFiles.length || 0} dosya</span>
           </div>
           <div className="knowledge-list">
@@ -2909,7 +3035,7 @@ function WorkspaceStep({
                 </button>
               ))
             ) : (
-              <div className="knowledge-empty">Dosyalar oluÅŸturuluyor...</div>
+              <div className="knowledge-empty">Dosyalar oluşturuluyor...</div>
             )}
           </div>
           {memoryFiles.length > 2 ? (
@@ -2918,14 +3044,14 @@ function WorkspaceStep({
               className="knowledge-toggle"
               onClick={() => setShowAllKnowledgeFiles((current) => !current)}
             >
-              {showAllKnowledgeFiles ? 'Daralt' : 'GeniÅŸlet'}
+              {showAllKnowledgeFiles ? 'Daralt' : 'Genişlet'}
             </button>
           ) : null}
         </div>
       </aside>
 
       <div className="chat-input-bar">
-        <button type="button" className="chat-plus-button" aria-label="Yeni iÅŸ">
+        <button type="button" className="chat-plus-button" aria-label="Yeni iş">
           +
         </button>
         <input
@@ -2941,14 +3067,14 @@ function WorkspaceStep({
           disabled={analysisPending || chatPending || isChatLocked}
           placeholder={
             isChatLocked
-              ? `Bu oturum iÃ§in ${CHAT_MESSAGE_LIMIT} mesaj hakkÄ± doldu`
-              : `Aylin'e mesaj yaz... (${chatRemainingMessages}/${CHAT_MESSAGE_LIMIT})`
+              ? `Bu oturum için ${CHAT_MESSAGE_LIMIT} mesaj hakkı doldu`
+              : `Olric’e mesaj yaz... (${chatRemainingMessages}/${CHAT_MESSAGE_LIMIT})`
           }
         />
         <button
           type="button"
           className="chat-send-button"
-          aria-label="GÃ¶nder"
+          aria-label="Gönder"
           disabled={analysisPending || chatPending || isChatLocked || !chatDraft.trim()}
           onClick={onChatSubmit}
         >

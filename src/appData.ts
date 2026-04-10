@@ -36,7 +36,7 @@ export type Platform = {
 export const specialists: Specialist[] = [
   {
     id: 'aylin',
-    name: 'Aylin',
+    name: 'Olric',
     role: 'Bütünleşik dijital pazarlamacı',
     summary:
       'SEO, sosyal medya, reklam ve kampanya planlamasını tek bir büyüme sorumlusu gibi uçtan uca yönetir.',

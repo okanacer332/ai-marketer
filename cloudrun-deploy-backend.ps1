@@ -6,6 +6,7 @@ param(
     [string]$RepositoryName = "ai-marketer",
     [string]$ImageName = "backend",
     [string]$FrontendOrigin = "https://ai-marketer-hhto.vercel.app",
+    [string]$FrontendOrigins = "https://ai-marketer-hhto.vercel.app,http://localhost:5173,http://127.0.0.1:5173",
     [string]$MongoDbUri = "",
     [string]$MongoDbName = "acrtech_ai_marketer",
     [string]$GeminiApiKey = "",
@@ -60,6 +61,7 @@ $envVars = @(
     "GEMINI_API_KEY=$GeminiApiKey"
     "GEMINI_MODEL=$GeminiModel"
     "FRONTEND_ORIGIN=$FrontendOrigin"
+    "FRONTEND_ORIGINS=$FrontendOrigins"
     "HTTP_VERIFY_SSL=true"
     "MONGODB_URI=$MongoDbUri"
     "MONGODB_DB_NAME=$MongoDbName"

@@ -307,6 +307,20 @@ class ChatMessageResponse(BaseModel):
     max_user_messages: int = Field(alias="maxUserMessages")
 
 
+class GuestSessionResponseModel(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    guest_session_id: str = Field(alias="guestSessionId")
+    status: str
+
+
+class GuestSessionClaimResponseModel(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    status: str
+    claimed_workspace_id: str | None = Field(default=None, alias="claimedWorkspaceId")
+
+
 class AuditEventResponseModel(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

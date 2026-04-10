@@ -5,7 +5,7 @@ export const revolutHeroAssets = {
 
 export const revolutHomepageNav = [
   'Uzmanlıklar',
-  'İş Akışı',
+  'İş akışı',
   'Çıktılar',
   'Kurumsal',
 ] as const
@@ -19,7 +19,7 @@ export const revolutScrollCards = [
     tone: 'warm',
   },
   {
-    eyebrow: 'Agent Aylin',
+    eyebrow: 'Olric.',
     figure: '24/7',
     label: 'Çalışıyor',
     caption: 'Markayı okur, içgörüyü çıkarır, sonraki hamleleri kurgular.',
@@ -84,7 +84,7 @@ export const whyUsItems = [
     icon: 'sparkles',
     title: 'Hazır olduğunuz anda başlar',
     description:
-      'Aylin ilk günden markayı okur ve çalışmaya başlamak için uzun bir hazırlık süreci beklemez.',
+      'Olric ilk günden markayı okur ve çalışmaya başlamak için uzun bir hazırlık süreci beklemez.',
     tone: 'lavender',
   },
   {
@@ -98,7 +98,7 @@ export const whyUsItems = [
     icon: 'checks',
     title: 'Kontrol sizde kalır',
     description:
-      'Aylin önerir, hazırlar ve yürütür. Öncelik ve onay mekanizması yine sizde kalır.',
+      'Olric önerir, hazırlar ve yürütür. Öncelik ve onay mekanizması yine sizde kalır.',
     tone: 'slate',
   },
 ] as const
@@ -115,7 +115,7 @@ export const solutionItems = [
     icon: 'rocket',
     title: 'Sadece önermez, uygular',
     description:
-      'Aylin yalnızca fikir vermez; içerik planını, araştırma akışını ve optimizasyon kararlarını yürütür.',
+      'Olric yalnızca fikir vermez; içerik planını, araştırma akışını ve optimizasyon kararlarını yürütür.',
     tone: 'mint',
   },
   {

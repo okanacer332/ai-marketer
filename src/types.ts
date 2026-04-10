@@ -224,6 +224,16 @@ export type ChatMessageResponse = {
   maxUserMessages: number
 }
 
+export type GuestSessionResponse = {
+  guestSessionId: string
+  status: string
+}
+
+export type GuestSessionClaimResponse = {
+  status: string
+  claimedWorkspaceId?: string | null
+}
+
 export type AnalyzeResponse = {
   analysis: Analysis
   memoryFiles: MemoryFile[]

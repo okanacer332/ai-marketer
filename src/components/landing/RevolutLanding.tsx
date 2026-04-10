@@ -117,7 +117,7 @@ function RevolutTopbar({
   return (
     <header className={`revolut-home-topbar revolut-home-topbar-${variant}`}>
       <button type="button" className="revolut-home-logo">
-        AGENT AYLİN
+        Olric.
       </button>
 
       <nav className="revolut-home-nav" aria-label="Ana gezinme">
@@ -133,7 +133,7 @@ function RevolutTopbar({
           Giriş yap
         </button>
         <button type="button" className="revolut-home-signup" onClick={onStart}>
-          Başla
+          Olric ile başlayın
         </button>
       </div>
     </header>
@@ -149,7 +149,7 @@ function ScrollCard({
 }: (typeof revolutScrollCards)[number]) {
   return (
     <article className={`revolut-scroll-card revolut-scroll-card-${tone}`}>
-      <img src={revolutHeroAssets.portrait} alt="Aylin" className="revolut-scroll-card-image" />
+      <img src={revolutHeroAssets.portrait} alt="Olric" className="revolut-scroll-card-image" />
 
       <div className="revolut-scroll-card-overlay">
         <span>{eyebrow}</span>
@@ -174,7 +174,7 @@ function HeroScene({ onStart }: Pick<RevolutLandingProps, 'onStart'>) {
           pazarlama sistemi kuran otonom çalışma katmanı.
         </p>
         <button type="button" className="revolut-home-download" onClick={onStart}>
-          Aylin ile başlayın
+          Olric ile başlayın
         </button>
       </div>
 
@@ -183,7 +183,7 @@ function HeroScene({ onStart }: Pick<RevolutLandingProps, 'onStart'>) {
 
         <img
           src={revolutHeroAssets.heroPortrait}
-          alt="Aylin"
+          alt="Olric"
           className="revolut-hero-portrait"
         />
 
@@ -218,7 +218,7 @@ function SalaryScene({ onStart }: Pick<RevolutLandingProps, 'onStart'>) {
       <div className="revolut-salary-copy">
         <h2>Pazarlamanız, yeniden kuruldu</h2>
         <p>
-          Aylin web sitenizi okur, ilk çıktıları hazırlar, öncelikleri sıralar ve onayınıza göre
+          Olric web sitenizi okur, ilk çıktıları hazırlar, öncelikleri sıralar ve onayınıza göre
           düzenli bir çalışma akışı kurar.
         </p>
         <button type="button" className="revolut-salary-button" onClick={onStart}>
@@ -226,7 +226,7 @@ function SalaryScene({ onStart }: Pick<RevolutLandingProps, 'onStart'>) {
         </button>
       </div>
 
-      <div className="revolut-salary-cards" aria-label="Örnek Aylin kartları">
+      <div className="revolut-salary-cards" aria-label="Örnek Olric kartları">
         {revolutScrollCards.map((card) => (
           <ScrollCard key={card.eyebrow} {...card} />
         ))}
@@ -242,7 +242,7 @@ function HowWeWorkSection() {
         <p className="revolut-section-kicker">Nasıl çalışır</p>
         <h2 id="how-we-work">Önce markayı çözer, sonra büyüme sistemini kurar.</h2>
         <p className="revolut-section-summary">
-          Aylin ilk olarak markayı, teklif yapısını ve hedef kitleyi netleştirir. Ardından içerik,
+          Olric ilk olarak markayı, teklif yapısını ve hedef kitleyi netleştirir. Ardından içerik,
           SEO ve kampanya akışını sizin önceliklerinize göre düzenler.
         </p>
       </div>
@@ -307,7 +307,7 @@ function WhyUsSection() {
   return (
     <section className="revolut-why-section revolut-content-shell" aria-labelledby="why-us">
       <div className="revolut-section-heading revolut-section-heading-wide">
-        <p className="revolut-section-kicker">Neden Aylin?</p>
+        <p className="revolut-section-kicker">Neden Olric?</p>
         <h2 id="why-us">
           Yeni pazarlama ekibinizle tanışın.
           <br />
@@ -315,7 +315,7 @@ function WhyUsSection() {
           <span className="revolut-highlight revolut-highlight-sky">Siz dinlenirken ilerler.</span>
         </h2>
         <p className="revolut-section-summary">
-          İhtiyacınız olan uzmanlığı seçersiniz. Aylin araştırmadan raporlamaya kadar işi taşır;
+          İhtiyacınız olan uzmanlığı seçersiniz. Olric araştırmadan raporlamaya kadar işi taşır;
           siz ise büyüme yönünü kontrol edersiniz.
         </p>
       </div>
@@ -350,7 +350,7 @@ function SolutionsSection() {
           <span className="revolut-highlight revolut-highlight-sky">her ölçekte</span> uyum sağlar
         </h2>
         <p className="revolut-section-summary">
-          Basit başlangıç, doğrudan entegrasyon ve esnek akışlarla birlikte Aylin, operasyon
+          Basit başlangıç, doğrudan entegrasyon ve esnek akışlarla birlikte Olric, operasyon
           büyüdükçe sizinle aynı hızda ölçeklenir.
         </p>
       </div>

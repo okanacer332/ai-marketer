@@ -346,6 +346,12 @@
   padding: 14px 22px 0;
 }
 
+.panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .panel-header h1 {
   margin: 0;
   color: var(--ink-strong);
@@ -966,6 +972,20 @@
   padding: 12px;
 }
 
+.guest-session-card {
+  gap: 10px;
+}
+
+.guest-session-card h3 {
+  margin: 0;
+  color: var(--ink-strong);
+  font-size: 1rem;
+}
+
+.guest-session-card .compact-button {
+  justify-self: flex-start;
+}
+
 .side-section-heading {
   display: flex;
   align-items: center;
@@ -1165,6 +1185,16 @@
 
   .chat-message {
     max-width: 100%;
+  }
+
+  .panel-header {
+    align-items: flex-start;
+  }
+
+  .panel-header-actions {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .workspace-footer-actions {
